@@ -61,7 +61,7 @@ test_sample.txt
 test_sample.vcf
 ```
 
-Fișierul `gwas_catalog_associations.tsv` rămâne local și nu este trimis pe GitHub, dar poate fi inclus în deploy-ul către `shinyapps.io`.
+Fișierul `gwas_catalog_associations.tsv` rămâne local și nu este trimis pe GitHub.
 
 3. Rulează aplicația:
 
@@ -75,7 +75,9 @@ Pentru demo public se poate folosi `shinyapps.io`. Linkul generat de `shinyapps.
 
 Atenție: fișierul GWAS Catalog local este mare. Pentru un repository GitHub public se recomandă să nu fie încărcat direct, ci gestionat separat.
 
-Pentru publicare pe `shinyapps.io`, fișierul `gwas_catalog_associations.tsv` trebuie să existe în folderul aplicației înainte de rularea comenzii `rsconnect::deployApp()`. Fișierul este exclus doar de la GitHub prin `.gitignore`, nu și de la deploy-ul `shinyapps.io`.
+Pentru publicare pe `shinyapps.io`, aplicația este recomandată ca demo online. Fișierul `gwas_catalog_associations.tsv` este exclus din deploy prin `.rscignore`, deoarece este foarte mare și poate consuma memoria disponibilă pe planul gratuit. În această variantă online, aplicația folosește fallback-ul API prin `gwasrapidd` pentru rsID-urile negăsite local.
+
+Pentru analiza completă cu fișiere ADN mari și GWAS local, aplicația se rulează local pe laptop, cu `gwas_catalog_associations.tsv` pus lângă `app.R`.
 
 Baza SQLite nu trebuie creată manual. La prima rulare, aplicația creează automat fișierul `genetic_app.sqlite` în folderul aplicației.
 

@@ -3,6 +3,8 @@
 .RDataTmp
 .Rhistory
 .Rproj.user/
+rsconnect/
+
 
 # Baza de date locală
 *.sqlite
