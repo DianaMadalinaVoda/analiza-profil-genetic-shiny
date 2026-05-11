@@ -30,9 +30,7 @@ options(shiny.maxRequestSize = 1024 * 1024 * 1024)
 gwas_file_path = "gwas_catalog_associations.tsv"
 gwas_file_path_candidates = c(
   gwas_file_path,
-  file.path(getwd(), "gwas_catalog_associations.tsv"),
-  "C:/Users/acasaPC/Desktop/aplicatie_disertatie/gwas_catalog_associations.tsv",
-  "C:/Users/acasaPC/Desktop/gwas_catalog_associations.tsv"
+  file.path(getwd(), "gwas_catalog_associations.tsv")
 )
 
 # Baza SQLite este creată automat în folderul aplicației, ca proiectul să fie portabil.
