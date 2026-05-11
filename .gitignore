@@ -1,0 +1,32 @@
+# Fișiere locale R/RStudio
+.RData
+.RDataTmp
+.Rhistory
+.Rproj.user/
+
+# Baza de date locală
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+
+# Cache-uri și rezultate generate local
+progress_gwas.rds
+
+# GWAS Catalog local este prea mare pentru GitHub.
+gwas_catalog_associations.tsv
+
+# Fișiere ADN reale sau potențial sensibile
+23andMe*.txt
+Ancestry*.txt
+FTDNA*.txt
+*.vcf
+
+# Păstrăm explicit fișierele demo mici.
+!demo_*.txt
+!test_sample.txt
+!test_sample.vcf
+!test_sample.csv
+
+# Fișiere temporare accidentale
+0)
