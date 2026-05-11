@@ -24,6 +24,8 @@ Din motive de dimensiune și confidențialitate, următoarele fișiere nu trebui
 
 Acestea sunt excluse prin `.gitignore`.
 
+Important: faptul că `gwas_catalog_associations.tsv` nu este urcat pe GitHub nu înseamnă că aplicația nu îl folosește. Pentru rulare locală sau pentru publicare pe `shinyapps.io`, fișierul trebuie pus manual în folderul aplicației, lângă `app.R`.
+
 ## Rulare locală
 
 1. Instalează pachetele necesare în R:
@@ -46,6 +48,21 @@ Varianta folosită în aplicație este:
 
 După descărcare, pune fișierul `gwas_catalog_associations.tsv` în folderul aplicației, lângă `app.R`.
 
+Structura locală recomandată este:
+
+```text
+app.R
+README.md
+.gitignore
+.rscignore
+gwas_catalog_associations.tsv
+test_sample.csv
+test_sample.txt
+test_sample.vcf
+```
+
+Fișierul `gwas_catalog_associations.tsv` rămâne local și nu este trimis pe GitHub, dar poate fi inclus în deploy-ul către `shinyapps.io`.
+
 3. Rulează aplicația:
 
 ```r
@@ -57,6 +74,8 @@ shiny::runApp()
 Pentru demo public se poate folosi `shinyapps.io`. Linkul generat de `shinyapps.io` poate fi transformat ulterior în cod QR pentru prezentarea disertației.
 
 Atenție: fișierul GWAS Catalog local este mare. Pentru un repository GitHub public se recomandă să nu fie încărcat direct, ci gestionat separat.
+
+Pentru publicare pe `shinyapps.io`, fișierul `gwas_catalog_associations.tsv` trebuie să existe în folderul aplicației înainte de rularea comenzii `rsconnect::deployApp()`. Fișierul este exclus doar de la GitHub prin `.gitignore`, nu și de la deploy-ul `shinyapps.io`.
 
 Baza SQLite nu trebuie creată manual. La prima rulare, aplicația creează automat fișierul `genetic_app.sqlite` în folderul aplicației.
 
