@@ -3,8 +3,6 @@
 .RDataTmp
 .Rhistory
 .Rproj.user/
-rsconnect/
-
 
 # Baza de date locală
 *.sqlite
@@ -25,7 +23,9 @@ FTDNA*.txt
 *.vcf
 
 # Păstrăm explicit fișierele demo mici.
+!demo_*.csv
 !demo_*.txt
+!demo_*.vcf
 !test_sample.txt
 !test_sample.vcf
 !test_sample.csv

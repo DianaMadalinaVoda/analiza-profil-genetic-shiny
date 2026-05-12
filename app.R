@@ -53,7 +53,7 @@ gwas_cache_env = new.env(parent = emptyenv())
 
 
 
-# Funcții ajutatoare
+# Funcții ajutătoare
 clean_column_names = function(x) {
   x = enc2utf8(x)
   x = gsub("^\ufeff", "", x)
@@ -72,7 +72,7 @@ split_into_chunks = function(values, chunk_size) {
   split(values, ceiling(seq_along(values) / chunk_size))
 }
 
-# Găsește prima cale valida către fișierul local GWAS Catalog.
+# Găsește prima cale validă către fișierul local GWAS Catalog.
 resolve_gwas_file_path = function() {
   existing_paths = gwas_file_path_candidates[file.exists(gwas_file_path_candidates)]
   if (length(existing_paths) == 0) {
@@ -139,7 +139,7 @@ verify_password = function(stored_password, password_value) {
     return(isTRUE(sodium::password_verify(stored_password, password_value)))
   }
   
-  # Compatibilitate pentru conturile vechi, dacă în DB existău parole în clar.
+  # Compatibilitate pentru conturile vechi, dacă în DB existau parole în clar.
   identical(stored_password, password_value)
 }
 
@@ -185,18 +185,18 @@ convert_vcf_gt_to_genotype = function(gt, ref, alt) {
 }
 
 
-# CITIRE FISIERE ADN
+# CITIRE FIȘIERE ADN
 
 
-# Detectează formatul fișierului încărcat și il transforma într-un format comun.
+# Detectează formatul fișierului încărcat și îl transformă într-un format comun.
 read_adn_data = function(file_path) {
   # Primele linii sunt suficiente pentru a identifica formatul fără să citim tot fișierul de două ori.
   header_lines = readLines(file_path, n = 30, warn = FALSE, encoding = "UTF-8")
   header_text = paste(header_lines, collapse = "\n")
   
-  # Aplicatia accepta formate diferite, dar toate sunt convertite ulterior la aceleași coloane:
+  # Aplicația acceptă formate diferite, dar toate sunt convertite ulterior la aceleași coloane:
   # rsid, cromozom și genotip.
-  is_ftdna = any(grepl("RSID,CHROMOSOME", header_lines, ignore.case = TRUE))
+  is_ftdna = any(grepl("^RSID,CHROMOSOME,POSITION,RESULT", header_lines, ignore.case = TRUE))
   is_vcf = any(grepl("^##fileformat=VCF", header_lines, ignore.case = TRUE)) ||
     any(grepl("^#CHROM\\tPOS\\tID\\tREF\\tALT\\tQUAL\\tFILTER\\tINFO", header_lines, ignore.case = TRUE))
   is_23andme = grepl("23andMe", header_text, ignore.case = TRUE) ||
@@ -339,12 +339,12 @@ read_adn_data = function(file_path) {
   }
   
   res$rsid = tolower(trimws(as.character(res$rsid)))
-  # Se păstrează doar identificatori rsID valizi, pentru a evita trimiteri greșite către GWAS.
+  # Se păstrează doar identificatorii rsID valizi, pentru a evita trimiterile greșite către GWAS.
   res = res %>% filter(grepl("^rs[0-9]+$", rsid))
   res$genotype = gsub("[^A-Z]", "-", res$genotype)
   res$chrom = normalize_chrom_value(res$chrom)
   
-  # Detectarea sexului este orientativa și se bazeaza pe prezența markerilor X/Y.
+  # Detectarea sexului este orientativă și se bazează pe prezența markerilor X/Y.
   has_y = any(res$chrom == "Y", na.rm = TRUE)
   has_x = any(res$chrom == "X", na.rm = TRUE)
   
@@ -364,7 +364,7 @@ read_adn_data = function(file_path) {
 
 
 
-# CITIRE REFERINTA GWAS
+# CITIRE REFERINȚĂ GWAS
 
 
 # Citește o copie locală a GWAS Catalog și o ține în memorie pentru viteză.
@@ -379,7 +379,7 @@ read_gwas_data_local = function(variant_ids) {
   }
   
   if (!exists("local_gwas_ref", envir = gwas_cache_env, inherits = FALSE)) {
-    # TSV-ul local este citit o singură data pe sesiune și apoi refolosit din memorie.
+    # TSV-ul local este citit o singură dată pe sesiune și apoi refolosit din memorie.
     gwas = read.delim(
       resolved_gwas_file_path,
       header = TRUE,
@@ -450,7 +450,7 @@ read_gwas_data_online = function(variant_ids) {
   
   variant_chunks = split_into_chunks(variant_ids, gwas_query_chunk_size)
   
-  # Funcție defensivă: încearca de mai multe ori același batch, deoarece API-ul poate răspunde lent.
+  # Funcție defensivă: încearcă de mai multe ori același batch, deoarece API-ul poate răspunde lent.
   safe_get_associations = function(chunk_ids, max_tries = 3) {
     for (i in seq_len(max_tries)) {
       res = tryCatch(
@@ -714,7 +714,7 @@ read_gwas_data_online = function(variant_ids) {
     ) %>%
     distinct()
   
-  # Tabelul final este redus la coloanele folosite în interfața și în raport.
+  # Tabelul final este redus la coloanele folosite în interfață și în raport.
   ref
 }
 
@@ -772,6 +772,95 @@ normalize_gwas_ref = function(ref_df) {
   ref_df
 }
 
+# Extrage alela de risc corespunzatoare rsID-ului curent din campul GWAS.
+extract_risk_allele_for_rsid = function(risk_field, rsid) {
+  risk_field = as.character(risk_field)
+  rsid = tolower(trimws(as.character(rsid)))
+  
+  mapply(function(field, current_rsid) {
+    if (is.na(field) || !nzchar(field) || is.na(current_rsid) || !nzchar(current_rsid)) {
+      return(NA_character_)
+    }
+    
+    parts = unlist(strsplit(field, ";", fixed = TRUE), use.names = FALSE)
+    parts = trimws(parts)
+    current_part = parts[tolower(sub("-.*$", "", parts)) == current_rsid][1]
+    
+    if (is.na(current_part) || !grepl("-", current_part, fixed = TRUE)) {
+      return(NA_character_)
+    }
+    
+    allele = sub("^.*-", "", current_part)
+    allele = toupper(gsub("[^ACGT]", "", allele))
+    
+    if (!nzchar(allele)) {
+      return(NA_character_)
+    }
+    
+    allele
+  }, risk_field, rsid, USE.NAMES = FALSE)
+}
+
+# Pastreaza doar asocierile GWAS pentru care genotipul contine alela de risc raportata.
+filter_matches_by_risk_allele = function(df) {
+  if (is.null(df) || nrow(df) == 0 || !"strongest_snp_risk_allele" %in% names(df)) {
+    return(df)
+  }
+  
+  rsid_col = if ("rsid_join" %in% names(df)) "rsid_join" else "rsid"
+  if (!all(c(rsid_col, "genotype") %in% names(df))) {
+    return(df)
+  }
+  
+  df$risk_allele_match = extract_risk_allele_for_rsid(df$strongest_snp_risk_allele, df[[rsid_col]])
+  df$genotype_clean = toupper(gsub("[^ACGT]", "", as.character(df$genotype)))
+  has_risk_allele = mapply(
+    function(allele, genotype_value) {
+      if (is.na(allele) || !nzchar(allele)) {
+        return(TRUE)
+      }
+      
+      grepl(allele, genotype_value, fixed = TRUE)
+    },
+    df$risk_allele_match,
+    df$genotype_clean,
+    USE.NAMES = FALSE
+  )
+  
+  df = df %>%
+    filter(has_risk_allele) %>%
+    select(-any_of(c("risk_allele_match", "genotype_clean")))
+  
+  df
+}
+
+# Reduce rândurile repetate pentru același SNP, păstrând asocierea cu p-value cel mai mic.
+collapse_matches_by_rsid = function(df) {
+  if (is.null(df) || nrow(df) == 0) {
+    return(df)
+  }
+  
+  rsid_col = if ("rsid_join" %in% names(df)) "rsid_join" else "rsid"
+  group_cols = intersect(c("Sursă", "Sursa", "sample_id", rsid_col, "genotype"), names(df))
+  
+  if (length(group_cols) == 0 || !"p_value" %in% names(df)) {
+    return(df %>% distinct())
+  }
+  
+  df %>%
+    mutate(
+      p_value_numeric_sort = suppressWarnings(as.numeric(p_value))
+    ) %>%
+    arrange(
+      is.na(p_value_numeric_sort),
+      p_value_numeric_sort
+    ) %>%
+    group_by(across(all_of(group_cols))) %>%
+    slice(1) %>%
+    ungroup() %>%
+    select(-any_of("p_value_numeric_sort"))
+}
+
 
 
 # BAZA DE DATE SQLite
@@ -803,7 +892,7 @@ read_text_file_content = function(file_path) {
 }
 
 read_gwas_cache = function(variant_ids) {
-  # Cache-ul evita apelurile repetate către API pentru aceleași rsID-uri.
+  # Cache-ul evită apelurile repetate către API pentru aceleași rsID-uri.
   conn = get_db_connection()
   on.exit(dbDisconnect(conn), add = TRUE)
   
@@ -813,7 +902,7 @@ read_gwas_cache = function(variant_ids) {
   if (length(variant_ids) == 0 || !table_exists(conn, "gwas_annotations_cache")) {
     return(empty_gwas_ref())
   }
-  # Interogarile sunt impartite în bucăți pentru a evita eroarea SQLite "too many SQL variables".
+  # Interogările sunt împărțite în bucăți pentru a evita eroarea SQLite "too many SQL variables".
   chunks = split_into_chunks(variant_ids, gwas_cache_lookup_chunk_size)
   
   results = lapply(chunks, function(chunk) {
@@ -886,7 +975,7 @@ save_gwas_cache = function(ref_df, requested_rsids) {
 }
 
 get_gwas_data_cached = function(variant_ids, progress_callback = NULL) {
-  # Varianta simplă cache + API, folosita intern pentru rsID-urile care chiar ajung la API.
+  # Varianta simplă cache + API, folosită intern pentru rsID-urile care chiar ajung la API.
   variant_ids = unique(tolower(trimws(as.character(variant_ids))))
   variant_ids = variant_ids[grepl("^rs[0-9]+$", variant_ids)]
   
@@ -1193,7 +1282,7 @@ initialize_database = function() {
   
   migrate_legacy_tables(conn)
   
-  # La prima rulare se creeaza automat contul admin implicit.
+  # La prima rulare se creează automat contul admin implicit.
   existing_user = dbGetQuery(
     conn,
     "SELECT username FROM users WHERE username = ?",
@@ -1823,7 +1912,7 @@ read_upload_metadata = function(username, upload_id, role = "user") {
   }
 }
 
-# Șterge complet un upload și toate datele asociate lui
+# Șterge complet un upload și toate datele asociate lui.
 delete_upload_for_user = function(username, upload_id, role = "user") {
   conn = get_db_connection()
   on.exit(dbDisconnect(conn), add = TRUE)
@@ -1874,7 +1963,7 @@ wrap_pdf_text = function(x, width = 70) {
   paste(strwrap(as.character(x), width = width), collapse = "\n")
 }
 
-# Scrie un bloc de text într-o poziție fixa în pagina PDF.
+# Scrie un bloc de text într-o poziție fixă în pagina PDF.
 draw_pdf_block = function(text, x = 0.07, y = 0.95, cex = 0.9, font = 1, width = 70, lineheight = 1.25) {
   grid.text(
     wrap_pdf_text(text, width = width),
@@ -1885,7 +1974,7 @@ draw_pdf_block = function(text, x = 0.07, y = 0.95, cex = 0.9, font = 1, width =
   )
 }
 
-# Genereaza o paletă cu nume pentru ggplot, astfel încât scale_fill_manual să nu mai dea warning-uri.
+# Generează o paletă cu nume pentru ggplot, astfel încât scale_fill_manual să nu mai dea warning-uri.
 make_named_palette = function(levels_values) {
   levels_values = as.character(levels_values)
   levels_values = levels_values[!is.na(levels_values) & nzchar(levels_values)]
@@ -2007,7 +2096,7 @@ draw_venn_png = function(sets, file) {
 }
 
 ui = fluidPage(
-  # Interfața are două zone: panoul de autentificare și aplicația principala.
+  # Interfața are două zone: panoul de autentificare și aplicația principală.
   useShinyjs(),
   theme = shinytheme("flatly"),
   tags$head(
@@ -2337,9 +2426,7 @@ ui = fluidPage(
 
 
 
-# # SERVER
-# 
-# 
+# SERVER
 server = function(input, output, session) {
   initialize_database()
   
@@ -2457,16 +2544,19 @@ server = function(input, output, session) {
     } else {
       shinyjs::runjs("$('body').removeClass('wide-tab sidebar-hidden');")
     }
+    shinyjs::runjs("setTimeout(function(){ $.fn.dataTable.tables({visible:true, api:true}).columns.adjust().draw(false); }, 250);")
   }, ignoreInit = FALSE)
   
   observeEvent(input$show_sidebar_btn, {
     # Buton manual pentru readucerea sidebar-ului fără schimbarea tabului curent.
     shinyjs::runjs("$('body').removeClass('sidebar-hidden');")
+    shinyjs::runjs("setTimeout(function(){ $.fn.dataTable.tables({visible:true, api:true}).columns.adjust().draw(false); }, 250);")
   })
   
   observeEvent(input$hide_sidebar_btn, {
     # Buton manual pentru ascunderea sidebar-ului pe taburile cu tabele mari.
     shinyjs::runjs("$('body').addClass('sidebar-hidden');")
+    shinyjs::runjs("setTimeout(function(){ $.fn.dataTable.tables({visible:true, api:true}).columns.adjust().draw(false); }, 250);")
   })
   
   observeEvent(input$login_btn, {
@@ -2727,7 +2817,7 @@ server = function(input, output, session) {
       
       rsid_sets = lapply(adn_list, function(x) unique(tolower(trimws(as.character(x$rsid)))))
       rsid_scope_label = if (length(rsid_sets) == 1) "rsid-uri din fișier" else "rsid-uri comune între fișiere"
-      # Pentru un singur fișier folosim toate rsID-urile; pentru mai multe fișiere folosim intersecția.
+      # Pentru un singur fișier folosim toate rsID-urile; pentru mai multe fișiere folosim reuniunea.
       all_rsids = if (length(rsid_sets) == 1) {
         rsid_sets[[1]]
       } else {
@@ -2752,7 +2842,7 @@ server = function(input, output, session) {
           get_gwas_data_smart(
             all_rsids,
             progress_callback = function(i, n, detail = NULL) {
-              # Progresul GWAS este afișat în interfața, ca utilizatorul să vadă etapa curentă.
+              # Progresul GWAS este afișat în interfață, ca utilizatorul să vadă etapa curentă.
               incProgress(1 / max(1, n), detail = detail)
               status_text(if (is.null(detail)) "⏳ Analiza GWAS este în curs." else paste("⏳", detail))
             }
@@ -2773,6 +2863,8 @@ server = function(input, output, session) {
           by = c("rsid_join" = "rsid"),
           relationship = "many-to-many"
         )
+        matched_data = filter_matches_by_risk_allele(matched_data)
+        matched_data = collapse_matches_by_rsid(matched_data)
         adn_list[[fname]] = sample_data
         
         sex_val = stats$Sex[stats$Fișier == fname][1]
@@ -2822,8 +2914,18 @@ server = function(input, output, session) {
     req(app_data())
     
     df_stats = app_data()$stats
+    df_stats$Eticheta = tools::file_path_sans_ext(df_stats[[names(df_stats)[1]]])
+    df_stats$Eticheta = gsub("^demo_", "", df_stats$Eticheta)
+    df_stats$Eticheta = gsub("_50$", "", df_stats$Eticheta)
+    df_stats$Eticheta = gsub("_", " ", df_stats$Eticheta)
+    df_stats$Eticheta = stringr::str_to_title(df_stats$Eticheta)
+    df_stats$Tooltip = paste0(
+      "Fișier: ", df_stats[[names(df_stats)[1]]],
+      "<br>SNP-uri: ", df_stats$SNP,
+      "<br>Status profil: ", df_stats$Sex
+    )
     
-    p = ggplot(df_stats, aes(x = Fișier, y = SNP, fill = Sex)) +
+    p = ggplot(df_stats, aes(x = Eticheta, y = SNP, fill = Sex, text = Tooltip)) +
       geom_col(width = 0.6) +
       scale_fill_manual(values = c(
         "Masculin" = "#B3CDE3",
@@ -2831,6 +2933,10 @@ server = function(input, output, session) {
         "Necunoscut (Lipsă markeri sexuali)" = "#FFFFCC"
       )) +
       theme_minimal() +
+      theme(
+        axis.text.x = element_text(angle = 35, hjust = 1, size = 10),
+        plot.margin = margin(10, 20, 55, 10)
+      ) +
       labs(
         title = "Distribuția variantelor genetice și sexul detectat",
         x = "Eșantion",
@@ -2838,7 +2944,8 @@ server = function(input, output, session) {
         fill = "Status profil"
       )
     
-    ggplotly(p)
+    ggplotly(p, tooltip = "text") %>%
+      layout(margin = list(b = 95))
   })
   
   output$dynamic_filtres = renderUI({
@@ -2860,7 +2967,7 @@ server = function(input, output, session) {
   })
   
   filtred_report = reactive({
-    # Combîna variantele ADN cu adnotările GWAS și pregătește linkurile pentru tabel.
+    # Combină variantele ADN cu adnotările GWAS și pregătește linkurile pentru tabel.
     req(app_data())
     combined = bind_rows(app_data()$adn, .id = "Sursa")
     combined$rsid_join = tolower(combined$rsid)
@@ -2870,6 +2977,8 @@ server = function(input, output, session) {
       by = c("rsid_join" = "rsid"),
       relationship = "many-to-many"
     )
+    report = filter_matches_by_risk_allele(report)
+    report = collapse_matches_by_rsid(report)
     
     report$rsid = sprintf(
       '<a href="https://www.ebi.ac.uk/gwas/search?query=%s" target="_blank">%s</a>',
@@ -2913,6 +3022,8 @@ server = function(input, output, session) {
     adn = app_data()$adn[[input$selected_sample]]
     adn$rsid_join = tolower(trimws(as.character(adn$rsid)))
     df_merge = inner_join(adn, app_data()$ref, by = c("rsid_join" = "rsid"))
+    df_merge = filter_matches_by_risk_allele(df_merge)
+    df_merge = collapse_matches_by_rsid(df_merge)
     return(df_merge)
   })
   
@@ -3038,7 +3149,7 @@ server = function(input, output, session) {
       paste0("Raport_profil_", safe_download_name(input$selected_sample), "_", Sys.Date(), ".pdf")
     },
     content = function(file) {
-      # Raportul PDF foloseste aceleași date ca profilul individual din interfața.
+      # Raportul PDF folosește aceleași date ca profilul individual din interfață.
       req(app_data(), input$selected_sample)
       
       df = indiv_data()

@@ -1,0 +1,10 @@
+name: analiza-profil-genetic-shiny
+title:
+username: analiza-genetica
+account: analiza-genetica
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 17340395
+bundleId: 11983801
+url: https://analiza-genetica.shinyapps.io/analiza-profil-genetic-shiny/
+version: 1
