@@ -135,7 +135,6 @@ rsconnect::deployApp(
 )
 ```
 
-Linkul generat de `shinyapps.io` poate fi transformat în cod QR pentru prezentarea disertației.
 
 ## Roluri utilizatori
 
