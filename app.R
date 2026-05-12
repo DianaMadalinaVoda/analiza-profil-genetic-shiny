@@ -1616,8 +1616,8 @@ read_user_upload_history = function(username, role = "user") {
   on.exit(dbDisconnect(conn), add = TRUE)
   
   if (identical(role, "admin")) {
-    dbGetQuery(
-      conn,
+      dbGetQuery(
+        conn,
       "
         SELECT
           sample_id AS upload_id,
@@ -1657,8 +1657,8 @@ get_upload_file_for_user = function(username, upload_id, role = "user") {
   on.exit(dbDisconnect(conn), add = TRUE)
   
   if (identical(role, "admin")) {
-    dbGetQuery(
-      conn,
+      dbGetQuery(
+        conn,
       "
         SELECT
           sample_id AS upload_id,
@@ -2320,7 +2320,7 @@ ui = fluidPage(
               )
             ),
             br(),
-            
+      
           )
         )
       )
@@ -2431,6 +2431,7 @@ server = function(input, output, session) {
   # Ștergerea rezultatelor afișate se face manual, din butonul de reset din tabul Istoric.
   observeEvent(input$reset_session_results, {
     app_data(NULL)
+    shinyjs::reset("adn_files")
     updateSelectInput(session, "selected_sample", choices = character(0), selected = character(0))
     refresh_compare_samples(selected = character(0))
     updateSelectizeInput(session, "selected_history_upload", selected = character(0))
@@ -2445,6 +2446,7 @@ server = function(input, output, session) {
     } else {
       shinyjs::show("login_panel")
       shinyjs::hide("app_content")
+      shinyjs::runjs("$('body').removeClass('wide-tab sidebar-hidden');")
     }
   })
   
@@ -2474,6 +2476,8 @@ server = function(input, output, session) {
     user_row = get_user_account(trimws(input$login_username), input$login_password)
     
     if (nrow(user_row) == 1) {
+      shinyjs::reset("adn_files")
+      updateTabsetPanel(session, "main_tabs", selected = "stats")
       current_user(trimws(input$login_username))
       current_role(user_row$role[1])
       logged_in(TRUE)
@@ -2511,6 +2515,11 @@ server = function(input, output, session) {
     current_user(NULL)
     current_role("user")
     app_data(NULL)
+    shinyjs::reset("adn_files")
+    shinyjs::runjs("$('body').removeClass('wide-tab sidebar-hidden');")
+    updateTabsetPanel(session, "main_tabs", selected = "stats")
+    updateSelectInput(session, "selected_sample", choices = character(0), selected = character(0))
+    refresh_compare_samples(selected = character(0))
     login_status("")
     status_text("Încarcă fișierele ADN, apoi apasă ANALIZEAZĂ.")
   })
@@ -2853,7 +2862,7 @@ server = function(input, output, session) {
   filtred_report = reactive({
     # Combîna variantele ADN cu adnotările GWAS și pregătește linkurile pentru tabel.
     req(app_data())
-    combined = bind_rows(app_data()$adn, .id = "Sursă")
+    combined = bind_rows(app_data()$adn, .id = "Sursa")
     combined$rsid_join = tolower(combined$rsid)
     report = inner_join(
       combined,
@@ -3658,7 +3667,7 @@ server = function(input, output, session) {
         sample_label = paste0(metadata$username[1], " - ", sample_label)
       }
       
-      matches_df$Sursă = sample_label
+      matches_df$Sursa = sample_label
       matches_df
     })
     
