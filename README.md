@@ -52,13 +52,13 @@ cache SQLite -> API gwasrapidd limitat
 Repository-ul conține fișiere demo mici, fără date reale:
 
 ```text
-demo_23andme_femeie_44.txt
-demo_ancestry_femeie_47.txt
-demo_csv_femeie_43.csv
-demo_ftdna_barbat_45.txt
-demo_ftdna_barbat_46.csv
-demo_vcf_fara_markeri_42.vcf
-demo_vcf_txt_fara_markeri_48.txt
+demo_23andme_femeie.txt
+demo_ancestry_femeie.txt
+demo_csv_femeie.csv
+demo_ftdna_barbat.txt
+demo_ftdna_barbat.csv
+demo_fara_markeri.vcf
+demo_vcf_fara_markeri.txt
 ```
 
 Aceste fișiere sunt utile pentru testarea aplicației fără utilizarea unor fișiere ADN reale. Numerele din numele fișierelor indică numărul de variante incluse.
