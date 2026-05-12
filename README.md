@@ -107,13 +107,12 @@ rsconnect::deployApp(
 )
 ```
 
-Linkul generat de `shinyapps.io` poate fi transformat în cod QR pentru prezentarea disertației.
 
 ## Roluri utilizatori
 
 Aplicația are două tipuri de admin:
 
-- `admin principal`: contul implicit `admin`, care poate aproba/respingere cereri de admin și revoca roluri admin;
+- `admin principal`: contul implicit `admin`, care poate aproba/respinge cereri de admin și revoca roluri admin;
 - `admin promovat`: utilizator aprobat de adminul principal, care poate vizualiza și gestiona upload-uri, dar nu poate aproba alți admini.
 
 Utilizatorii obișnuiți pot trimite o cerere pentru rol admin din interfață.
