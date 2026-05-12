@@ -1,30 +1,63 @@
 # Analiza profilului genetic în R Shiny
 
-Aplicație R Shiny pentru încărcarea și analiza fișierelor ADN personale în formate precum 23andMe, Ancestry, FTDNA, VCF și CSV. Aplicația extrage rsID-urile, le compară cu GWAS Catalog și afișează statistici, interpretări genetice, profil individual, istoric și comparații între fișiere.
+Aplicație R Shiny pentru încărcarea, procesarea și interpretarea fișierelor ADN personale. Aplicația extrage rsID-uri din fișiere genetice, le compară cu GWAS Catalog și afișează statistici, interpretări genetice, profil individual, istoric de încărcări și comparații între fișiere.
 
-## Funcționalități principale
+Proiectul a fost realizat pentru disertație și include atât o variantă completă pentru rulare locală, cât și o variantă demo pentru publicare pe `shinyapps.io`.
 
-- autentificare utilizator și rol admin;
-- încărcare fișiere ADN în formate diferite;
-- extragere rsID, cromozom și genotip;
-- căutare GWAS inteligentă: cache SQLite, fișier local GWAS, apoi API prin `gwasrapidd`;
-- salvare upload-uri și rezultate în SQLite;
+## Funcționalități
+
+- încărcare fișiere ADN în formate `23andMe`, `Ancestry`, `FTDNA`, `VCF`, `TXT` și `CSV`;
+- extragere și normalizare `rsID`, cromozom și genotip;
+- identificarea sexului biologic estimativ pe baza markerilor X/Y;
+- integrare cu GWAS Catalog prin fișier local și API `gwasrapidd`;
+- cache SQLite pentru evitarea interogărilor API repetate;
+- autentificare cu utilizatori și roluri;
+- cereri pentru rol admin, aprobare, respingere și revocare rol admin;
+- salvarea fișierelor încărcate și a rezultatelor în SQLite;
 - istoric upload-uri;
-- comparare 2-3 fișiere prin diagrama Venn;
-- raport PDF pentru profil individual.
+- comparare 2-3 fișiere prin diagramă Venn;
+- raport PDF pentru profilul individual;
+- interfață adaptată pentru desktop și demo pe mobil.
 
-## Fișiere care NU sunt incluse pe GitHub
+## Flux GWAS
 
-Din motive de dimensiune și confidențialitate, următoarele fișiere nu trebuie urcate în repository:
+Aplicația folosește două moduri de lucru:
 
-- `gwas_catalog_associations.tsv`, deoarece este foarte mare;
-- fișiere ADN reale, de exemplu 23andMe, Ancestry, FTDNA sau VCF;
-- baza de date SQLite locală;
-- fișiere generate automat de R, precum `.RData` sau `.Rhistory`.
+```text
+Local:
+cache SQLite -> GWAS Catalog local TSV -> API gwasrapidd pentru lipsuri
 
-Acestea sunt excluse prin `.gitignore`.
+shinyapps.io demo:
+cache SQLite -> API gwasrapidd limitat
+```
 
-Important: faptul că `gwas_catalog_associations.tsv` nu este urcat pe GitHub nu înseamnă că aplicația nu îl folosește. Pentru rulare locală sau pentru publicare pe `shinyapps.io`, fișierul trebuie pus manual în folderul aplicației, lângă `app.R`.
+În rularea locală, fișierul `gwas_catalog_associations.tsv` permite căutarea rapidă în GWAS Catalog. În demo-ul online, acest fișier este exclus deoarece este foarte mare, iar aplicația folosește API-ul pentru un număr limitat de rsID-uri.
+
+## Fișiere excluse de pe GitHub
+
+Din motive de dimensiune și confidențialitate, următoarele fișiere nu se urcă pe GitHub:
+
+- `gwas_catalog_associations.tsv`;
+- baze de date SQLite, precum `genetic_app.sqlite`;
+- fișiere ADN reale;
+- fișiere R locale, precum `.RData` și `.Rhistory`;
+- cache-uri generate local.
+
+Aceste reguli sunt definite în `.gitignore`.
+
+## Fișiere pentru demo
+
+Repository-ul poate conține fișiere demo mici, fără date reale:
+
+```text
+test_sample.csv
+test_sample.txt
+test_sample.vcf
+test_sample_female.csv
+test_sample_XYlipsa.txt
+```
+
+Acestea sunt utile pentru testarea aplicației fără utilizarea unor fișiere ADN reale.
 
 ## Rulare locală
 
@@ -42,45 +75,51 @@ install.packages(c(
 
 [GWAS Catalog - File Downloads](https://www.ebi.ac.uk/gwas/docs/file-downloads)
 
-Varianta folosită în aplicație este:
-
-`All associations v1.0.2 - with added ontology annotations, GWAS Catalog study accession numbers and genotyping technology`
-
-După descărcare, pune fișierul `gwas_catalog_associations.tsv` în folderul aplicației, lângă `app.R`.
-
-Structura locală recomandată este:
+Varianta folosită:
 
 ```text
-app.R
-README.md
-.gitignore
-.rscignore
-gwas_catalog_associations.tsv
-test_sample.csv
-test_sample.txt
-test_sample.vcf
+All associations v1.0.2 - with added ontology annotations,
+GWAS Catalog study accession numbers and genotyping technology
 ```
 
-Fișierul `gwas_catalog_associations.tsv` rămâne local și nu este trimis pe GitHub.
+3. Pune fișierul `gwas_catalog_associations.tsv` în folderul aplicației, lângă `app.R`.
 
-3. Rulează aplicația:
+4. Rulează aplicația:
 
 ```r
 shiny::runApp()
 ```
 
-## Publicare
+La prima rulare, baza SQLite `genetic_app.sqlite` este creată automat în folderul aplicației.
 
-Pentru demo public se poate folosi `shinyapps.io`. Linkul generat de `shinyapps.io` poate fi transformat ulterior în cod QR pentru prezentarea disertației.
+## Publicare pe shinyapps.io
 
-Atenție: fișierul GWAS Catalog local este mare. Pentru un repository GitHub public se recomandă să nu fie încărcat direct, ci gestionat separat.
+Pentru demo public, aplicația poate fi publicată pe `shinyapps.io`.
 
-Pentru publicare pe `shinyapps.io`, aplicația este recomandată ca demo online. Fișierul `gwas_catalog_associations.tsv` este exclus din deploy prin `.rscignore`, deoarece este foarte mare și poate consuma memoria disponibilă pe planul gratuit. În această variantă online, aplicația folosește fallback-ul API prin `gwasrapidd` pentru rsID-urile negăsite local.
+Fișierul `gwas_catalog_associations.tsv` este exclus din deploy prin `.rscignore`, deoarece este foarte mare și poate depăși resursele disponibile pe planul gratuit.
 
-Pentru analiza completă cu fișiere ADN mari și GWAS local, aplicația se rulează local pe laptop, cu `gwas_catalog_associations.tsv` pus lângă `app.R`.
+Comandă exemplu:
 
-Baza SQLite nu trebuie creată manual. La prima rulare, aplicația creează automat fișierul `genetic_app.sqlite` în folderul aplicației.
+```r
+rsconnect::deployApp(
+  appDir = "D:/analiza-profil-genetic-shiny",
+  appName = "analiza-profil-genetic-shiny"
+)
+```
+
+Linkul generat de `shinyapps.io` poate fi transformat în cod QR pentru prezentarea disertației.
+
+## Roluri utilizatori
+
+Aplicația are două tipuri de admin:
+
+- `admin principal`: contul implicit `admin`, care poate aproba/respingere cereri de admin și revoca roluri admin;
+- `admin promovat`: utilizator aprobat de adminul principal, care poate vizualiza și gestiona upload-uri, dar nu poate aproba alți admini.
+
+Utilizatorii obișnuiți pot trimite o cerere pentru rol admin din interfață.
 
 ## Confidențialitate
 
-Fișierele ADN conțin date personale sensibile. Nu încărcați pe GitHub fișiere ADN reale, baze de date SQLite cu upload-uri reale sau rezultate asociate unor persoane reale.
+Fișierele ADN conțin date personale sensibile. Nu încărcați pe GitHub fișiere ADN reale, baze de date SQLite cu date reale sau rezultate asociate unor persoane reale.
+
+Pentru date reale sau fișiere mari, se recomandă rularea locală a aplicației.

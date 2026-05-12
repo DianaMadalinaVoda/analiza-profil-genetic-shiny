@@ -42,7 +42,7 @@ gwas_query_chunk_size = 25
 gwas_cache_lookup_chunk_size = 400
 gwas_cache_fetch_chunk_size = 150
 gwas_max_workers = 4
-gwas_api_max_new_rsids = 20
+gwas_api_max_new_rsids = 50
 
 # Culori pastel folosite în grafice și în elementele vizuale ale aplicației.
 pastel_colors = c("#FFFFCC", "#CCEBC5", "#DECBE4", "#FBB4AE", "#E5D8BD", "#B3CDE3", "#FDDAEC", "#C9E4DE","#EFD3D7", 
@@ -1575,10 +1575,26 @@ save_upload_to_db = function(username, sample_name, sample_df, sex_value, matche
   })
 }
 
-# Verifică dacă același utilizator a încărcat deja exact același fișier.
-upload_exists_for_user = function(username, original_file_name, original_file_content) {
+# Verifică duplicatul în funcție de rol.
+# Userul simplu verifică doar în propriul cont; adminul verifică global, deoarece vede toate upload-urile.
+upload_exists_for_scope = function(username, role, original_file_name, original_file_content) {
   conn = get_db_connection()
   on.exit(dbDisconnect(conn), add = TRUE)
+  
+  if (identical(role, "admin")) {
+    existing_upload = dbGetQuery(
+      conn,
+      "
+        SELECT sample_id
+        FROM samples
+        WHERE original_file_name = ? AND original_file_content = ?
+        LIMIT 1
+      ",
+      params = list(original_file_name, original_file_content)
+    )
+    
+    return(nrow(existing_upload) > 0)
+  }
   
   existing_upload = dbGetQuery(
     conn,
@@ -1600,8 +1616,8 @@ read_user_upload_history = function(username, role = "user") {
   on.exit(dbDisconnect(conn), add = TRUE)
   
   if (identical(role, "admin")) {
-      dbGetQuery(
-        conn,
+    dbGetQuery(
+      conn,
       "
         SELECT
           sample_id AS upload_id,
@@ -1641,8 +1657,8 @@ get_upload_file_for_user = function(username, upload_id, role = "user") {
   on.exit(dbDisconnect(conn), add = TRUE)
   
   if (identical(role, "admin")) {
-      dbGetQuery(
-        conn,
+    dbGetQuery(
+      conn,
       "
         SELECT
           sample_id AS upload_id,
@@ -2032,6 +2048,14 @@ ui = fluidPage(
         min-height: 38px !important;
         font-size: 14px !important;
       }
+      .shiny-input-container,
+      input[type='file'] {
+        max-width: 100%;
+      }
+      .btn-file {
+        width: 100%;
+        text-align: left;
+      }
       .tab-content {
         padding-top: 8px;
       }
@@ -2195,8 +2219,7 @@ ui = fluidPage(
         fileInput(
           "adn_files",
           "⛓️ Încarcă fișiere ADN",
-          multiple = TRUE,
-          accept = c(".txt", ".csv", ".vcf")
+          multiple = TRUE
         ),
         tags$small("Acceptă 23andMe, Ancestry, FTDNA, CSV, VCF și fișiere .txt în format VCF."),
         hr(),
@@ -2297,7 +2320,7 @@ ui = fluidPage(
               )
             ),
             br(),
-      
+            
           )
         )
       )
@@ -2647,12 +2670,12 @@ server = function(input, output, session) {
         stop("Niciun fișier ADN valid nu a putut fi procesat.")
       }
       
-      # Ignoră doar fișierele deja încărcate de același utilizator.
+      # Userul simplu verifică duplicatele doar în contul lui; adminul verifică global.
       # Dacă utilizatorul încarcă simultan un fișier duplicat și unul nou,
       # se procesează mai departe doar fișierele noi.
       duplicate_files = character()
       for (fname in names(original_contents)) {
-        if (upload_exists_for_user(current_user(), fname, original_contents[[fname]])) {
+        if (upload_exists_for_scope(current_user(), current_role(), fname, original_contents[[fname]])) {
           duplicate_files = c(duplicate_files, fname)
         }
       }
@@ -2673,7 +2696,7 @@ server = function(input, output, session) {
         if (length(keep_files) == 0) {
           
           stop(paste(
-            "Toate fișierele selectate există deja în contul utilizatorului:",
+            "Toate fișierele selectate există deja pentru nivelul de acces al contului curent:",
             paste(duplicate_files, collapse = ", ")
           ))
           
@@ -2699,7 +2722,10 @@ server = function(input, output, session) {
       all_rsids = if (length(rsid_sets) == 1) {
         rsid_sets[[1]]
       } else {
-        Reduce(intersect, rsid_sets)
+        Reduce(union, rsid_sets)
+      }
+      if (length(rsid_sets) > 1) {
+        rsid_scope_label = "rsid-uri totale din fisiere"
       }
       all_rsids = unique(all_rsids[grepl("^rs[0-9]+$", all_rsids)])
       
