@@ -77,7 +77,19 @@ Aceste reguli sunt definite în `.gitignore`.
 
 ## Rulare locală
 
-1. Instalează pachetele necesare în R:
+Pentru rularea locală se recomandă instalarea `R` și `RStudio Desktop`. Aplicația poate rula și din consola R, dar RStudio este mai ușor de folosit pentru deschiderea proiectului și pornirea aplicației.
+
+1. Instalează R:
+
+[Download R](https://cran.r-project.org/)
+
+2. Instalează RStudio Desktop:
+
+[Download RStudio Desktop](https://posit.co/download/rstudio-desktop/)
+
+3. Deschide folderul aplicației în RStudio.
+
+4. Instalează pachetele necesare în consola R:
 
 ```r
 install.packages(c(
@@ -87,7 +99,7 @@ install.packages(c(
 ))
 ```
 
-2. Descarcă fișierul GWAS Catalog de pe pagina oficială:
+5. Descarcă fișierul GWAS Catalog de pe pagina oficială:
 
 [GWAS Catalog - File Downloads](https://www.ebi.ac.uk/gwas/docs/file-downloads)
 
@@ -98,9 +110,9 @@ All associations v1.0.2 - with added ontology annotations,
 GWAS Catalog study accession numbers and genotyping technology
 ```
 
-3. Pune fișierul `gwas_catalog_associations.tsv` în folderul aplicației, lângă `app.R`.
+6. Pune fișierul `gwas_catalog_associations.tsv` în folderul aplicației, lângă `app.R`.
 
-4. Rulează aplicația:
+7. Rulează aplicația:
 
 ```r
 shiny::runApp()
