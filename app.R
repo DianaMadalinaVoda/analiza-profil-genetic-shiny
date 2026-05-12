@@ -922,9 +922,11 @@ get_gwas_data_cached = function(variant_ids, progress_callback = NULL) {
     distinct()
 }
 
-# Obține date GWAS în ordinea corectă: cache SQLite, fișier local, apoi API doar pentru lipsuri.
+# Obține date GWAS în ordinea corectă.
+# Dacă TSV-ul local există: cache SQLite -> fișier local -> API doar pentru lipsuri.
+# Dacă TSV-ul local lipsește: cache SQLite -> API limitat, util pentru demo online pe shinyapps.io.
 get_gwas_data_smart = function(rsids, progress_callback = NULL) {
-  # Functia principala a fluxului GWAS: cache SQLite -> fișier local -> API doar pentru lipsuri.
+  # Funcția principală a fluxului GWAS, folosită atât local, cât și online.
   notify_progress = function(step, total, message) {
     if (!is.null(progress_callback)) {
       progress_callback(step, total, message)
@@ -944,18 +946,32 @@ get_gwas_data_smart = function(rsids, progress_callback = NULL) {
   cached_done = read_gwas_cached_rsids(rsids)
   cached_with_results = unique(cached_ref$rsid)
   
-  # Doar rsID-urile care nu au rezultat în cache sunt căutate în TSV-ul local.
-  notify_progress(2, 5, "Se verifică datele locale")
+  has_local_gwas = !is.na(resolve_gwas_file_path())
+  local_ref = empty_gwas_ref()
+  local_found = character()
   rsids_for_local = setdiff(rsids, cached_with_results)
-  local_ref = tryCatch(
-    read_gwas_data_local(rsids_for_local),
-    error = function(e) empty_gwas_ref()
-  )
-  local_found = unique(local_ref$rsid)
   
-  # 3. API-ul este fallback: primește doar rsid-uri negăsite în cache sau local.
-  notify_progress(3, 5, "Se interoghează API doar pentru rsid-urile lipsă")
+  if (has_local_gwas) {
+    # Doar rsID-urile care nu au rezultat în cache sunt căutate în TSV-ul local.
+    notify_progress(2, 5, "Se verifică datele locale")
+    local_ref = tryCatch(
+      read_gwas_data_local(rsids_for_local),
+      error = function(e) empty_gwas_ref()
+    )
+    local_found = unique(local_ref$rsid)
+  } else {
+    notify_progress(2, 5, "GWAS local indisponibil; se folosește API-ul pentru demo")
+  }
+  
+  # API-ul este fallback: primește doar rsid-uri negăsite în cache sau local.
   missing_for_api = setdiff(rsids, union(cached_done, local_found))
+  api_message = if (has_local_gwas) {
+    "Se interoghează API doar pentru rsid-urile lipsă"
+  } else {
+    paste("Se interoghează API pentru demo, maximum", gwas_api_max_new_rsids, "rsid-uri")
+  }
+  notify_progress(3, 5, api_message)
+  
   # Limita protejează aplicația de interogări foarte mari, utile mai ales pe shinyapps.io.
   api_rsids = head(missing_for_api, gwas_api_max_new_rsids)
   api_ref = empty_gwas_ref()
@@ -1739,10 +1755,19 @@ ui = fluidPage(
       }
       body {
         font-size: 14px !important;
+        overflow-x: auto;
       }
       .container-fluid {
         width: 96%;
         max-width: 1920px;
+      }
+      #login_panel {
+        max-width: 420px;
+        margin: 40px auto;
+        padding: 24px;
+        background: #ffffff;
+        border: 1px solid #d9e2ec;
+        border-radius: 12px;
       }
       .form-control,
       .selectize-input,
@@ -1769,7 +1794,11 @@ ui = fluidPage(
       .login-message {
         min-height: 18px;
         margin-top: 6px;
-        color: #c0392b;
+        color: #2c3e50;
+      }
+      .login-message:empty {
+        min-height: 0;
+        margin-top: 0;
       }
       .sidebar-status {
         max-height: 95px;
@@ -1804,8 +1833,78 @@ ui = fluidPage(
         width: 100%;
       }
       @media (max-width: 992px) {
+        html,
+        body {
+          width: 100%;
+          overflow-x: auto !important;
+          -webkit-overflow-scrolling: touch;
+        }
         html {
           font-size: 13px !important;
+        }
+        .container-fluid {
+          width: max-content;
+          min-width: 980px;
+          padding-left: 10px;
+          padding-right: 10px;
+        }
+        #app_content {
+          min-width: 980px;
+        }
+        #login_panel {
+          width: calc(100vw - 24px);
+          max-width: none;
+          margin: 12px auto;
+          padding: 16px;
+        }
+        .nav-tabs {
+          display: flex;
+          flex-wrap: nowrap;
+          overflow-x: auto;
+          overflow-y: hidden;
+          white-space: nowrap;
+        }
+        .nav-tabs > li {
+          float: none;
+          display: inline-block;
+        }
+        .sidebar-column,
+        .main-column {
+          float: left;
+        }
+        .sidebar-column {
+          width: 300px !important;
+        }
+        .main-column {
+          width: 650px !important;
+        }
+        body.sidebar-hidden .main-column {
+          width: 960px !important;
+        }
+        #hide_sidebar_btn,
+        #show_sidebar_btn {
+          left: 10px;
+          bottom: 10px;
+          padding: 8px 10px;
+          font-size: 12px !important;
+        }
+        .dataTables_wrapper {
+          overflow-x: auto;
+        }
+      }
+      @media (max-width: 992px) and (orientation: portrait) {
+        .container-fluid,
+        #app_content {
+          min-width: 760px;
+        }
+        .sidebar-column {
+          width: 260px !important;
+        }
+        .main-column {
+          width: 480px !important;
+        }
+        body.sidebar-hidden .main-column {
+          width: 740px !important;
         }
       }
       #loading-content {
@@ -1824,9 +1923,8 @@ ui = fluidPage(
   titlePanel("🧬 Analiza profilului genetic"),
   tags$div(
     id = "login_panel",
-    style = "max-width:420px; margin:40px auto; padding:24px; background:#ffffff; border:1px solid #d9e2ec; border-radius:12px;",
     h3("🔐 Autentificare"),
-    textInput("login_username", "Utilizator", value = default_app_username),
+    textInput("login_username", "Utilizator", value = ""),
     passwordInput("login_password", "Parolă"),
     actionButton("login_btn", "Intră în aplicație", class = "btn-primary", width = "100%"),
     tags$div(class = "login-message", textOutput("login_status")),
@@ -2143,7 +2241,7 @@ server = function(input, output, session) {
       updateTextInput(session, "register_password", value = "")
       updateTextInput(session, "register_password_confirm", value = "")
       
-      register_status("")
+      register_status("Cont creat cu succes. Acum puteți completa câmpurile de logare.")
     }, error = function(e) {
       register_status(paste("Eroare creare cont:", conditionMessage(e)))
     })
