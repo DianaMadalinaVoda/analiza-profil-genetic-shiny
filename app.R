@@ -111,6 +111,11 @@ password_is_hashed = function(password_value) {
   password_hash_type(password_value) == "sodium"
 }
 
+# Doar contul admin principal poate aproba cereri de promovare.
+is_primary_admin = function(username) {
+  identical(username, default_app_username)
+}
+
 hash_password = function(password_value) {
   if (!requireNamespace("sodium", quietly = TRUE)) {
     stop("Pentru securizarea parolelor instalează pachetul sodium: install.packages('sodium')")
@@ -1167,9 +1172,24 @@ initialize_database = function() {
     )
   ")
   
+  # Cereri prin care un utilizator poate solicita rol de admin.
+  dbExecute(conn, "
+    CREATE TABLE IF NOT EXISTS admin_requests (
+      request_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      requested_at TEXT NOT NULL,
+      resolved_at TEXT,
+      resolved_by TEXT
+    )
+  ")
+  
+  ensure_column_exists(conn, "admin_requests", "seen_by_user", "INTEGER NOT NULL DEFAULT 0")
+  
   dbExecute(conn, "CREATE INDEX IF NOT EXISTS idx_variants_sample_id ON variants(sample_id)")
   dbExecute(conn, "CREATE INDEX IF NOT EXISTS idx_annotations_sample_id ON annotations(sample_id)")
   dbExecute(conn, "CREATE INDEX IF NOT EXISTS idx_gwas_annotations_cache_rsid ON gwas_annotations_cache(rsid)")
+  dbExecute(conn, "CREATE INDEX IF NOT EXISTS idx_admin_requests_status ON admin_requests(status)")
   
   migrate_legacy_tables(conn)
   
@@ -1273,6 +1293,233 @@ create_user_account = function(username, password) {
   TRUE
 }
 
+# Trimite o cerere de promovare la rolul de admin.
+request_admin_role = function(username) {
+  conn = get_db_connection()
+  on.exit(dbDisconnect(conn), add = TRUE)
+  
+  role_row = dbGetQuery(
+    conn,
+    "SELECT role FROM users WHERE username = ?",
+    params = list(username)
+  )
+  
+  if (nrow(role_row) != 1) {
+    stop("Utilizatorul nu există.")
+  }
+  
+  if (identical(role_row$role[1], "admin")) {
+    stop("Acest cont are deja rol de admin.")
+  }
+  
+  existing_request = dbGetQuery(
+    conn,
+    "SELECT request_id FROM admin_requests WHERE username = ? AND status = 'pending'",
+    params = list(username)
+  )
+  
+  if (nrow(existing_request) > 0) {
+    stop("Există deja o cerere de admin în așteptare.")
+  }
+  
+  dbExecute(
+    conn,
+    "INSERT INTO admin_requests (username, status, requested_at) VALUES (?, 'pending', ?)",
+    params = list(username, as.character(Sys.time()))
+  )
+  
+  TRUE
+}
+
+# Citește cererile de admin care așteaptă aprobare.
+read_pending_admin_requests = function() {
+  conn = get_db_connection()
+  on.exit(dbDisconnect(conn), add = TRUE)
+  
+  dbGetQuery(
+    conn,
+    "
+      SELECT
+        request_id,
+        username,
+        status,
+        requested_at
+      FROM admin_requests
+      WHERE status = 'pending'
+      ORDER BY datetime(requested_at) ASC
+    "
+  )
+}
+
+# Verifică dacă userul curent are deja o cerere de admin în așteptare.
+get_admin_request_status = function(username) {
+  conn = get_db_connection()
+  on.exit(dbDisconnect(conn), add = TRUE)
+  
+  request_row = dbGetQuery(
+    conn,
+    "
+      SELECT status
+      FROM admin_requests
+      WHERE username = ?
+      ORDER BY datetime(requested_at) DESC
+      LIMIT 1
+    ",
+    params = list(username)
+  )
+  
+  if (nrow(request_row) == 0) {
+    return(NA_character_)
+  }
+  
+  request_row$status[1]
+}
+
+# Citește ultimul răspuns nevăzut al utilizatorului pentru cereri/rol admin.
+get_unseen_admin_notice = function(username) {
+  conn = get_db_connection()
+  on.exit(dbDisconnect(conn), add = TRUE)
+  
+  notice_row = dbGetQuery(
+    conn,
+    "
+      SELECT request_id, status
+      FROM admin_requests
+      WHERE username = ?
+        AND status IN ('approved', 'rejected', 'revoked')
+        AND COALESCE(seen_by_user, 0) = 0
+      ORDER BY datetime(COALESCE(resolved_at, requested_at)) DESC
+      LIMIT 1
+    ",
+    params = list(username)
+  )
+  
+  if (nrow(notice_row) == 0) {
+    return(NULL)
+  }
+  
+  notice_row
+}
+
+# Marchează un răspuns admin ca văzut de utilizator.
+mark_admin_notice_seen = function(request_id) {
+  conn = get_db_connection()
+  on.exit(dbDisconnect(conn), add = TRUE)
+  
+  dbExecute(
+    conn,
+    "UPDATE admin_requests SET seen_by_user = 1 WHERE request_id = ?",
+    params = list(request_id)
+  )
+  
+  TRUE
+}
+
+# Aprobă sau respinge o cerere de admin.
+resolve_admin_request = function(request_id, admin_username, decision = c("approved", "rejected")) {
+  decision = match.arg(decision)
+  conn = get_db_connection()
+  on.exit(dbDisconnect(conn), add = TRUE)
+  
+  dbBegin(conn)
+  tryCatch({
+    request_row = dbGetQuery(
+      conn,
+      "SELECT request_id, username, status FROM admin_requests WHERE request_id = ?",
+      params = list(request_id)
+    )
+    
+    if (nrow(request_row) != 1 || !identical(request_row$status[1], "pending")) {
+      stop("Cererea selectată nu mai este disponibilă.")
+    }
+    
+    if (identical(decision, "approved")) {
+      dbExecute(
+        conn,
+        "UPDATE users SET role = 'admin' WHERE username = ?",
+        params = list(request_row$username[1])
+      )
+    }
+    
+    dbExecute(
+      conn,
+      "
+        UPDATE admin_requests
+        SET status = ?, resolved_at = ?, resolved_by = ?, seen_by_user = 0
+        WHERE request_id = ?
+      ",
+      params = list(decision, as.character(Sys.time()), admin_username, request_id)
+    )
+    
+    dbCommit(conn)
+    TRUE
+  }, error = function(e) {
+    dbRollback(conn)
+    stop(e)
+  })
+}
+
+# Citește adminii promovați care pot fi revocați de adminul principal.
+read_promoted_admins = function() {
+  conn = get_db_connection()
+  on.exit(dbDisconnect(conn), add = TRUE)
+  
+  dbGetQuery(
+    conn,
+    "
+      SELECT
+        username,
+        role,
+        created_at
+      FROM users
+      WHERE role = 'admin' AND username <> ?
+      ORDER BY username ASC
+    ",
+    params = list(default_app_username)
+  )
+}
+
+# Revocă rolul de admin pentru un utilizator promovat.
+revoke_admin_role = function(username, admin_username) {
+  if (!is_primary_admin(admin_username)) {
+    stop("Doar adminul principal poate revoca roluri admin.")
+  }
+  
+  if (is_primary_admin(username)) {
+    stop("Rolul adminului principal nu poate fi revocat.")
+  }
+  
+  conn = get_db_connection()
+  on.exit(dbDisconnect(conn), add = TRUE)
+  
+  user_row = dbGetQuery(
+    conn,
+    "SELECT username, role FROM users WHERE username = ?",
+    params = list(username)
+  )
+  
+  if (nrow(user_row) != 1 || !identical(user_row$role[1], "admin")) {
+    stop("Utilizatorul selectat nu este admin.")
+  }
+  
+  dbExecute(
+    conn,
+    "UPDATE users SET role = 'user' WHERE username = ?",
+    params = list(username)
+  )
+  
+  dbExecute(
+    conn,
+    "
+      INSERT INTO admin_requests (username, status, requested_at, resolved_at, resolved_by, seen_by_user)
+      VALUES (?, 'revoked', ?, ?, ?, 0)
+    ",
+    params = list(username, as.character(Sys.time()), as.character(Sys.time()), admin_username)
+  )
+  
+  TRUE
+}
+
 # Salvează upload-ul, fișierul original și rezultatele analizei în SQLite.
 save_upload_to_db = function(username, sample_name, sample_df, sex_value, matched_df, original_file_name, original_file_content) {
   conn = get_db_connection()
@@ -1353,8 +1600,8 @@ read_user_upload_history = function(username, role = "user") {
   on.exit(dbDisconnect(conn), add = TRUE)
   
   if (identical(role, "admin")) {
-    dbGetQuery(
-      conn,
+      dbGetQuery(
+        conn,
       "
         SELECT
           sample_id AS upload_id,
@@ -1394,8 +1641,8 @@ get_upload_file_for_user = function(username, upload_id, role = "user") {
   on.exit(dbDisconnect(conn), add = TRUE)
   
   if (identical(role, "admin")) {
-    dbGetQuery(
-      conn,
+      dbGetQuery(
+        conn,
       "
         SELECT
           sample_id AS upload_id,
@@ -1943,6 +2190,7 @@ ui = fluidPage(
       sidebarPanel(
         class = "sidebar-column",
         textOutput("current_user_text"),
+        uiOutput("admin_request_status_ui"),
         hr(),
         fileInput(
           "adn_files",
@@ -1961,7 +2209,10 @@ ui = fluidPage(
           textOutput("status_text")
         ),
         br(),
-        actionButton("logout_btn", "🔓 Logout", width = "100%")
+        actionButton("logout_btn", "🔓 Logout", width = "100%"),
+        br(),
+        br(),
+        uiOutput("admin_request_action_ui")
       ),
       mainPanel(
         class = "main-column",
@@ -2027,6 +2278,8 @@ ui = fluidPage(
             "🗂️ Istoric", value = "istoric",
             br(),
             DTOutput("history_table"),
+            uiOutput("admin_requests_panel"),
+            uiOutput("revoke_admin_panel"),
             br(),
             fluidRow(
               column(8, uiOutput("history_file_ui")),
@@ -2073,6 +2326,7 @@ server = function(input, output, session) {
   current_user <- reactiveVal(NULL)
   current_role <- reactiveVal("user")
   history_refresh <- reactiveVal(0)
+  admin_request_refresh <- reactiveVal(0)
   login_status <- reactiveVal("")
   register_status <- reactiveVal("")
   status_text <- reactiveVal("Încarcă fișierele ADN, apoi apasă ANALIZEAZĂ.")
@@ -2201,6 +2455,26 @@ server = function(input, output, session) {
       current_role(user_row$role[1])
       logged_in(TRUE)
       login_status("")
+      
+      admin_notice = tryCatch(
+        get_unseen_admin_notice(trimws(input$login_username)),
+        error = function(e) NULL
+      )
+      
+      if (!is.null(admin_notice)) {
+        notice_message = dplyr::case_when(
+          identical(admin_notice$status[1], "approved") ~ "Cererea pentru rol admin a fost aprobată.",
+          identical(admin_notice$status[1], "rejected") ~ "Cererea pentru rol admin a fost respinsă.",
+          identical(admin_notice$status[1], "revoked") ~ "Rolul admin a fost revocat.",
+          TRUE ~ ""
+        )
+        
+        if (nzchar(notice_message)) {
+          status_text(notice_message)
+        }
+        
+        mark_admin_notice_seen(admin_notice$request_id[1])
+      }
     } else {
       login_status("Utilizator sau parolă invalidă.")
       current_role("user")
@@ -2255,6 +2529,78 @@ server = function(input, output, session) {
     req(current_user())
     paste("Utilizator:", current_user(), "| Rol:", current_role())
   })
+  
+  output$admin_request_status_ui = renderUI({
+    req(logged_in(), current_user())
+    admin_request_refresh()
+    
+    if (identical(current_role(), "admin")) {
+      admin_label = if (is_primary_admin(current_user())) {
+        "Cont admin principal activ."
+      } else {
+        "Cont admin promovat activ."
+      }
+      
+      return(tags$div(
+        style = "margin: 8px 0 4px 0; color: #2c3e50;",
+        tags$small(admin_label)
+      ))
+    }
+    
+    request_status = tryCatch(
+      get_admin_request_status(current_user()),
+      error = function(e) NA_character_
+    )
+    
+    status_text_admin = dplyr::case_when(
+      identical(request_status, "pending") ~ "Cererea pentru rol admin este în așteptare.",
+      identical(request_status, "approved") ~ "Cererea pentru rol admin a fost aprobată.",
+      identical(request_status, "rejected") ~ "Cererea pentru rol admin a fost respinsă.",
+      TRUE ~ "Nu există cerere pentru rol admin."
+    )
+    
+    tags$div(
+      style = "margin: 8px 0 4px 0; color: #2c3e50;",
+      tags$small(status_text_admin)
+    )
+  })
+  
+  output$admin_request_action_ui = renderUI({
+    req(logged_in(), current_user())
+    admin_request_refresh()
+    
+    if (identical(current_role(), "admin")) {
+      return(NULL)
+    }
+    
+    request_status = tryCatch(
+      get_admin_request_status(current_user()),
+      error = function(e) NA_character_
+    )
+    
+    if (identical(request_status, "pending") || identical(request_status, "approved")) {
+      return(NULL)
+    }
+    
+    tags$div(
+      style = "margin: 8px 0 4px 0;",
+      actionButton("request_admin_btn", "Solicită rol admin", class = "btn-info", width = "100%")
+    )
+  })
+  
+  observeEvent(input$request_admin_btn, {
+    req(logged_in(), current_user())
+    
+    tryCatch({
+      request_admin_role(current_user())
+      admin_request_refresh(admin_request_refresh() + 1)
+      history_refresh(history_refresh() + 1)
+      status_text("Cererea pentru rol admin a fost trimisă. Așteaptă aprobarea unui admin.")
+    }, error = function(e) {
+      status_text(paste("Cerere admin:", conditionMessage(e)))
+    })
+  })
+  
   # Procesează fișierele încărcate, interoghează GWAS prin API și salvează rezultatele.
   observeEvent(input$process_btn, {
     # Fluxul principal: citire fișiere ADN -> căutare GWAS -> salvare în DB -> afișare rezultate.
@@ -2951,6 +3297,160 @@ server = function(input, output, session) {
     history_refresh()
     history_df = read_user_upload_history(current_user(), current_role())
     datatable(history_df, options = list(pageLength = 10, scrollX = TRUE))
+  })
+  
+  output$admin_requests_panel = renderUI({
+    req(logged_in(), current_user())
+    history_refresh()
+    
+    if (!is_primary_admin(current_user())) {
+      return(NULL)
+    }
+    
+    pending_requests = read_pending_admin_requests()
+    
+    if (nrow(pending_requests) == 0) {
+      return(tags$div(
+        style = "margin: 12px 0; color: #6c757d;",
+        "Nu există cereri noi pentru rol admin."
+      ))
+    }
+    
+    tagList(
+      hr(),
+      h4("Cereri pentru rol admin"),
+      DTOutput("admin_requests_table"),
+      br(),
+      fluidRow(
+        column(
+          8,
+          selectInput(
+            "selected_admin_request",
+            "Selectează cererea",
+            choices = setNames(
+              pending_requests$request_id,
+              paste0("#", pending_requests$request_id, " - ", pending_requests$username, " - ", pending_requests$requested_at)
+            )
+          )
+        ),
+        column(
+          2,
+          tags$div(
+            style = "margin-top: 25px;",
+            actionButton("approve_admin_request", "Aprobă", class = "btn-success", width = "100%")
+          )
+        ),
+        column(
+          2,
+          tags$div(
+            style = "margin-top: 25px;",
+            actionButton("reject_admin_request", "Respinge", class = "btn-danger", width = "100%")
+          )
+        )
+      )
+    )
+  })
+  
+  output$admin_requests_table = renderDT({
+    req(logged_in(), current_user())
+    req(is_primary_admin(current_user()))
+    history_refresh()
+    
+    pending_requests = read_pending_admin_requests()
+    datatable(pending_requests, options = list(pageLength = 5, scrollX = TRUE))
+  })
+  
+  observeEvent(input$approve_admin_request, {
+    req(logged_in(), current_user(), input$selected_admin_request)
+    req(is_primary_admin(current_user()))
+    
+    tryCatch({
+      resolve_admin_request(as.integer(input$selected_admin_request), current_user(), "approved")
+      admin_request_refresh(admin_request_refresh() + 1)
+      history_refresh(history_refresh() + 1)
+      status_text("Cererea a fost aprobată. Utilizatorul are acum rol de admin.")
+    }, error = function(e) {
+      status_text(paste("Eroare aprobare admin:", conditionMessage(e)))
+    })
+  })
+  
+  observeEvent(input$reject_admin_request, {
+    req(logged_in(), current_user(), input$selected_admin_request)
+    req(is_primary_admin(current_user()))
+    
+    tryCatch({
+      resolve_admin_request(as.integer(input$selected_admin_request), current_user(), "rejected")
+      admin_request_refresh(admin_request_refresh() + 1)
+      history_refresh(history_refresh() + 1)
+      status_text("Cererea pentru rol admin a fost respinsă.")
+    }, error = function(e) {
+      status_text(paste("Eroare respingere admin:", conditionMessage(e)))
+    })
+  })
+  
+  output$revoke_admin_panel = renderUI({
+    req(logged_in(), current_user())
+    history_refresh()
+    
+    if (!is_primary_admin(current_user())) {
+      return(NULL)
+    }
+    
+    promoted_admins = read_promoted_admins()
+    
+    if (nrow(promoted_admins) == 0) {
+      return(tags$div(
+        style = "margin: 12px 0; color: #6c757d;",
+        "Nu există admini promovați care pot fi revocați."
+      ))
+    }
+    
+    tagList(
+      hr(),
+      h4("Revocare rol admin"),
+      DTOutput("promoted_admins_table"),
+      br(),
+      fluidRow(
+        column(
+          8,
+          selectInput(
+            "selected_revoke_admin",
+            "Selectează adminul",
+            choices = promoted_admins$username
+          )
+        ),
+        column(
+          4,
+          tags$div(
+            style = "margin-top: 25px;",
+            actionButton("revoke_admin_btn", "Revocă rol admin", class = "btn-danger", width = "100%")
+          )
+        )
+      )
+    )
+  })
+  
+  output$promoted_admins_table = renderDT({
+    req(logged_in(), current_user())
+    req(is_primary_admin(current_user()))
+    history_refresh()
+    
+    promoted_admins = read_promoted_admins()
+    datatable(promoted_admins, options = list(pageLength = 5, scrollX = TRUE))
+  })
+  
+  observeEvent(input$revoke_admin_btn, {
+    req(logged_in(), current_user(), input$selected_revoke_admin)
+    req(is_primary_admin(current_user()))
+    
+    tryCatch({
+      revoke_admin_role(input$selected_revoke_admin, current_user())
+      admin_request_refresh(admin_request_refresh() + 1)
+      history_refresh(history_refresh() + 1)
+      status_text(paste("Rolul admin a fost revocat pentru utilizatorul", input$selected_revoke_admin))
+    }, error = function(e) {
+      status_text(paste("Eroare revocare admin:", conditionMessage(e)))
+    })
   })
   
   output$history_file_ui = renderUI({
