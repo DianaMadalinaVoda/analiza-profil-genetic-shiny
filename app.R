@@ -43,6 +43,7 @@ gwas_cache_lookup_chunk_size = 400
 gwas_cache_fetch_chunk_size = 150
 gwas_max_workers = 4
 gwas_api_max_new_rsids = 50
+gwas_api_max_associations_online = 120
 
 # Culori pastel folosite în grafice și în elementele vizuale ale aplicației.
 pastel_colors = c("#FFFFCC", "#CCEBC5", "#DECBE4", "#FBB4AE", "#E5D8BD", "#B3CDE3", "#FDDAEC", "#C9E4DE","#EFD3D7", 
@@ -62,6 +63,12 @@ clean_column_names = function(x) {
   x = gsub("[^a-z0-9]+", "_", x)
   x = gsub("^_+|_+$", "", x)
   x
+}
+
+is_running_on_shinyapps = function() {
+  nzchar(Sys.getenv("SHINY_PORT")) ||
+    nzchar(Sys.getenv("SHINY_SERVER_VERSION")) ||
+    grepl("shinyapps", Sys.getenv("R_CONFIG_ACTIVE"), ignore.case = TRUE)
 }
 
 # Împarte vectorii mari în bucăți mai mici, util pentru SQLite și pentru interogările API.
@@ -84,6 +91,10 @@ resolve_gwas_file_path = function() {
 
 # Alege un număr rezonabil de procese paralele, fără să blocheze complet calculatorul.
 get_parallel_worker_count = function(task_count) {
+  if (is_running_on_shinyapps()) {
+    return(1)
+  }
+  
   available = parallel::detectCores(logical = TRUE)
   if (is.na(available) || available < 1) {
     available = 1
@@ -510,6 +521,9 @@ read_gwas_data_online = function(variant_ids) {
   }
   
   association_ids = unique(associations_obj@associations$association_id)
+  if (is_running_on_shinyapps() && length(association_ids) > gwas_api_max_associations_online) {
+    association_ids = association_ids[seq_len(gwas_api_max_associations_online)]
+  }
   
   if (length(association_ids) == 0) {
     return(empty_gwas_ref())
@@ -940,6 +954,27 @@ read_gwas_cached_rsids = function(variant_ids) {
   unique(bind_rows(results)$rsid)
 }
 
+save_gwas_requested_rsids = function(requested_rsids) {
+  conn = get_db_connection()
+  on.exit(dbDisconnect(conn), add = TRUE)
+  
+  requested_rsids = unique(tolower(trimws(as.character(requested_rsids))))
+  requested_rsids = requested_rsids[grepl("^rs[0-9]+$", requested_rsids)]
+  
+  if (length(requested_rsids) == 0 || !table_exists(conn, "gwas_cached_rsids")) {
+    return(invisible(NULL))
+  }
+  
+  marker_chunks = split_into_chunks(requested_rsids, gwas_cache_lookup_chunk_size)
+  for (chunk in marker_chunks) {
+    values_sql = paste(rep("(?)", length(chunk)), collapse = ",")
+    query = paste0("INSERT OR IGNORE INTO gwas_cached_rsids (rsid) VALUES ", values_sql)
+    dbExecute(conn, query, params = as.list(chunk))
+  }
+  
+  invisible(NULL)
+}
+
 save_gwas_cache = function(ref_df, requested_rsids) {
   # Salvarea se face într-o tranzacție, ca datele să rămână coerente dacă apare o eroare.
   conn = get_db_connection()
@@ -1059,15 +1094,22 @@ get_gwas_data_smart = function(rsids, progress_callback = NULL) {
   
   # API-ul este fallback: primește doar rsid-uri negăsite în cache sau local.
   missing_for_api = setdiff(rsids, union(cached_done, local_found))
+  api_limit = if (is_running_on_shinyapps()) min(gwas_api_max_new_rsids, 20) else gwas_api_max_new_rsids
+  if (is_running_on_shinyapps() && nrow(cached_ref) > 0) {
+    api_limit = 0
+  }
+  if (is_running_on_shinyapps() && length(missing_for_api) > api_limit) {
+    save_gwas_requested_rsids(missing_for_api)
+  }
   api_message = if (has_local_gwas) {
     "Se interoghează API doar pentru rsid-urile lipsă"
   } else {
-    paste("Se interoghează API pentru demo, maximum", gwas_api_max_new_rsids, "rsid-uri")
+    paste("Se interoghează API pentru demo, maximum", api_limit, "rsid-uri")
   }
   notify_progress(3, 5, api_message)
   
   # Limita protejează aplicația de interogări foarte mari, utile mai ales pe shinyapps.io.
-  api_rsids = head(missing_for_api, gwas_api_max_new_rsids)
+  api_rsids = head(missing_for_api, api_limit)
   api_ref = empty_gwas_ref()
   
   if (length(api_rsids) > 0) {
@@ -2969,7 +3011,7 @@ server = function(input, output, session) {
   filtred_report = reactive({
     # Combină variantele ADN cu adnotările GWAS și pregătește linkurile pentru tabel.
     req(app_data())
-    combined = bind_rows(app_data()$adn, .id = "Sursa")
+    combined = bind_rows(app_data()$adn, .id = "Sursă")
     combined$rsid_join = tolower(combined$rsid)
     report = inner_join(
       combined,
@@ -3778,7 +3820,7 @@ server = function(input, output, session) {
         sample_label = paste0(metadata$username[1], " - ", sample_label)
       }
       
-      matches_df$Sursa = sample_label
+      matches_df$Sursă = sample_label
       matches_df
     })
     

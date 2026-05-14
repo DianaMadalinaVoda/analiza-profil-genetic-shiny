@@ -47,18 +47,20 @@ cache SQLite -> API gwasrapidd limitat
 
 În rularea locală, fișierul `gwas_catalog_associations.tsv` permite căutarea rapidă în GWAS Catalog. În demo-ul online, acest fișier este exclus deoarece este foarte mare, iar aplicația folosește API-ul pentru un număr limitat de rsID-uri.
 
+În varianta publicată pe `shinyapps.io`, interogarea API este limitată la maximum `20` de rsID-uri noi per analiză, pentru a evita blocarea aplicației și depășirea resurselor disponibile. Pentru analiza completă se recomandă rularea locală, cu fișierul GWAS Catalog TSV descărcat lângă `app.R`.
+
 ## Fișiere pentru demo
 
 Repository-ul conține fișiere demo mici, fără date reale:
 
 ```text
-demo_23andme_femeie.txt
-demo_ancestry_femeie.txt
-demo_csv_femeie.csv
-demo_ftdna_barbat.txt
-demo_ftdna_barbat.csv
-demo_fara_markeri.vcf
-demo_vcf_fara_markeri.txt
+demo_23andme_femeie_44.txt
+demo_ancestry_femeie_47.txt
+demo_csv_femeie_43.csv
+demo_ftdna_barbat_45.txt
+demo_ftdna_barbat_46.csv
+demo_vcf_fara_markeri_42.vcf
+demo_vcf_txt_fara_markeri_48.txt
 ```
 
 Aceste fișiere sunt utile pentru testarea aplicației fără utilizarea unor fișiere ADN reale. Numerele din numele fișierelor indică numărul de variante incluse.
