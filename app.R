@@ -2416,7 +2416,69 @@ ui = fluidPage(
         white-space: normal;
         word-break: break-word;
       }
+      #startup_splash {
+        position: fixed;
+        inset: 0;
+        z-index: 20000;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: linear-gradient(135deg, #f8fbfd 0%, #e9f1f5 100%);
+        transition: opacity 0.7s ease, visibility 0.7s ease;
+      }
+      #startup_splash.splash-hidden {
+        opacity: 0;
+        visibility: hidden;
+      }
+      .startup-splash-card {
+        text-align: center;
+        padding: 34px 42px;
+        background: rgba(255, 255, 255, 0.86);
+        border: 1px solid #d9e2ec;
+        border-radius: 22px;
+        box-shadow: 0 18px 44px rgba(44, 62, 80, 0.16);
+      }
+      .startup-splash-logo {
+        max-width: 360px;
+        width: 58vw;
+        height: auto;
+        animation: splash-logo-in 0.8s ease both;
+      }
+      .startup-splash-text {
+        margin-top: 18px;
+        color: #2c3e50;
+        font-size: 18px !important;
+        font-weight: 600;
+      }
+      @keyframes splash-logo-in {
+        from {
+          opacity: 0;
+          transform: translateY(10px) scale(0.96);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0) scale(1);
+        }
+      }
     "))
+  ),
+  tags$script(HTML("
+    $(document).on('shiny:connected', function() {
+      setTimeout(function() {
+        $('#startup_splash').addClass('splash-hidden');
+        setTimeout(function() {
+          $('#startup_splash').remove();
+        }, 800);
+      }, 4200);
+    });
+  ")),
+  tags$div(
+    id = "startup_splash",
+    tags$div(
+      class = "startup-splash-card",
+      tags$img(src = "logo_aplicatie.png", class = "startup-splash-logo", alt = "Logo aplicație"),
+      tags$div(class = "startup-splash-text", "Analiza profilului genetic")
+    )
   ),
   titlePanel("🧬 Analiza profilului genetic"),
   tags$div(
