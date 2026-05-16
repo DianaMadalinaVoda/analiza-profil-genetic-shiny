@@ -42,7 +42,8 @@ gwas_query_chunk_size = 25
 gwas_cache_lookup_chunk_size = 400
 gwas_cache_fetch_chunk_size = 150
 gwas_max_workers = 4
-gwas_api_max_new_rsids = 50
+gwas_api_max_new_rsids = 20
+enable_risk_allele_filter = TRUE
 gwas_api_max_associations_online = 120
 
 # Culori pastel folosite în grafice și în elementele vizuale ale aplicației.
@@ -790,8 +791,26 @@ normalize_gwas_ref = function(ref_df) {
 extract_risk_allele_for_rsid = function(risk_field, rsid) {
   risk_field = as.character(risk_field)
   rsid = tolower(trimws(as.character(rsid)))
+  allele_result = rep(NA_character_, length(risk_field))
   
-  mapply(function(field, current_rsid) {
+  valid_idx = !is.na(risk_field) & nzchar(risk_field) & !is.na(rsid) & nzchar(rsid)
+  direct_idx = valid_idx & startsWith(tolower(trimws(risk_field)), paste0(rsid, "-"))
+  
+  if (any(direct_idx)) {
+    allele_result[direct_idx] = toupper(gsub(
+      "[^ACGT]",
+      "",
+      sub("^[^-]+-", "", sub(";.*$", "", risk_field[direct_idx]))
+    ))
+    allele_result[!nzchar(allele_result)] = NA_character_
+  }
+  
+  remaining_idx = which(valid_idx & is.na(allele_result) & grepl(";", risk_field, fixed = TRUE))
+  if (length(remaining_idx) == 0) {
+    return(allele_result)
+  }
+  
+  allele_result[remaining_idx] = mapply(function(field, current_rsid) {
     if (is.na(field) || !nzchar(field) || is.na(current_rsid) || !nzchar(current_rsid)) {
       return(NA_character_)
     }
@@ -812,7 +831,9 @@ extract_risk_allele_for_rsid = function(risk_field, rsid) {
     }
     
     allele
-  }, risk_field, rsid, USE.NAMES = FALSE)
+  }, risk_field[remaining_idx], rsid[remaining_idx], USE.NAMES = FALSE)
+  
+  allele_result
 }
 
 # Pastreaza doar asocierile GWAS pentru care genotipul contine alela de risc raportata.
@@ -846,6 +867,68 @@ filter_matches_by_risk_allele = function(df) {
     select(-any_of(c("risk_allele_match", "genotype_clean")))
   
   df
+}
+
+# Pregateste o singura data alela de risc in tabelul GWAS.
+# Astfel evitam recalcularea ei dupa fiecare join si in fiecare tabel/grafic.
+prepare_gwas_ref_for_join = function(ref_df) {
+  if (is.null(ref_df) || nrow(ref_df) == 0) {
+    return(ref_df)
+  }
+  
+  if (!isTRUE(enable_risk_allele_filter)) {
+    return(ref_df)
+  }
+  
+  if ("risk_allele_match" %in% names(ref_df)) {
+    return(ref_df)
+  }
+  
+  if (!all(c("rsid", "strongest_snp_risk_allele") %in% names(ref_df))) {
+    return(ref_df)
+  }
+  
+  ref_df$risk_allele_match = extract_risk_allele_for_rsid(
+    ref_df$strongest_snp_risk_allele,
+    ref_df$rsid
+  )
+  
+  ref_df
+}
+
+# Varianta rapida folosita dupa ce alela a fost deja extrasa in ref.
+filter_matches_by_prepared_risk_allele = function(df) {
+  if (!isTRUE(enable_risk_allele_filter)) {
+    return(df)
+  }
+  
+  if (is.null(df) || nrow(df) == 0 || !"risk_allele_match" %in% names(df)) {
+    return(filter_matches_by_risk_allele(df))
+  }
+  
+  if (!"genotype" %in% names(df)) {
+    return(df)
+  }
+  
+  genotype_clean = toupper(gsub("[^ACGT]", "", as.character(df$genotype)))
+  allele = as.character(df$risk_allele_match)
+  
+  keep_rows = mapply(
+    function(current_allele, current_genotype) {
+      if (is.na(current_allele) || !nzchar(current_allele)) {
+        return(TRUE)
+      }
+      
+      grepl(current_allele, current_genotype, fixed = TRUE)
+    },
+    allele,
+    genotype_clean,
+    USE.NAMES = FALSE
+  )
+  
+  df %>%
+    filter(keep_rows) %>%
+    select(-any_of(c("risk_allele_match", "genotype_clean")))
 }
 
 # Reduce rândurile repetate pentru același SNP, păstrând asocierea cu p-value cel mai mic.
@@ -2320,6 +2403,19 @@ ui = fluidPage(
         border-radius: 10px;
         display: none;
       }
+      #shiny-notification-panel {
+        top: 76% !important;
+        right: 20px !important;
+        bottom: auto !important;
+        left: auto !important;
+        z-index: 10000 !important;
+        transform: translateY(-50%);
+      }
+      .shiny-notification {
+        max-width: 420px;
+        white-space: normal;
+        word-break: break-word;
+      }
     "))
   ),
   titlePanel("🧬 Analiza profilului genetic"),
@@ -2375,14 +2471,12 @@ ui = fluidPage(
           tabPanel(
             "📊 Statistici", value = "stats",
             br(),
-            tableOutput("status_table"),
+            withSpinner(tableOutput("status_table"), type = 6, color = "#2c3e50"),
             hr(),
             withSpinner(plotlyOutput("stats_bar_plot", height = "300px"), type = 6, color = "#2c3e50")
           ),
           tabPanel(
             "🔗 Interpretare genetică", value = "interpretare",
-            br(),
-            uiOutput("dynamic_filtres"),
             br(),
             downloadButton("download_main", "Descarcă tabel CSV"),
             hr(),
@@ -2582,7 +2676,7 @@ server = function(input, output, session) {
   observeEvent(input$main_tabs, {
     # Pe taburile cu tabele mari ascundem temporar sidebar-ul pentru mai mult spațiu.
     if (input$main_tabs %in% c("interpretare", "istoric")) {
-      shinyjs::runjs("$('body').addClass('wide-tab sidebar-hidden');")
+      shinyjs::runjs("$('body').addClass('wide-tab').removeClass('sidebar-hidden');")
     } else {
       shinyjs::runjs("$('body').removeClass('wide-tab sidebar-hidden');")
     }
@@ -2758,7 +2852,6 @@ server = function(input, output, session) {
     tryCatch({
       request_admin_role(current_user())
       admin_request_refresh(admin_request_refresh() + 1)
-      history_refresh(history_refresh() + 1)
       status_text("Cererea pentru rol admin a fost trimisă. Așteaptă aprobarea unui admin.")
     }, error = function(e) {
       status_text(paste("Cerere admin:", conditionMessage(e)))
@@ -2829,7 +2922,7 @@ server = function(input, output, session) {
             paste(duplicate_files, collapse = ", ")
           ),
           type = "warning",
-          duration = 8
+          duration = 15
         )
         
         keep_files = setdiff(names(adn_list), duplicate_files)
@@ -2880,47 +2973,85 @@ server = function(input, output, session) {
         message = "🔎 Analiză GWAS",
         detail = "Se verifică datele locale",
         value = 0,
+        session = session,
         {
           get_gwas_data_smart(
             all_rsids,
             progress_callback = function(i, n, detail = NULL) {
               # Progresul GWAS este afișat în interfață, ca utilizatorul să vadă etapa curentă.
-              incProgress(1 / max(1, n), detail = detail)
+              incProgress(1 / max(1, n), detail = detail, session = session)
               status_text(if (is.null(detail)) "⏳ Analiza GWAS este în curs." else paste("⏳", detail))
             }
           )
         }
       )
       
-      status_text(paste("✅ Analiza este finalizată. Au fost găsite", nrow(ref), "asocieri GWAS pentru", length(all_rsids), rsid_scope_label, "."))
+      status_text(paste("✅ Analiza GWAS este finalizată. Pregătesc alelele de risc pentru", nrow(ref), "asocieri."))
       
-      for (i in seq_along(adn_list)) {
-        # Salvăm separat variantele brute și potrivirile GWAS pentru fiecare fișier.
-        fname = names(adn_list)[i]
-        sample_data = adn_list[[i]]
-        sample_data$rsid_join = tolower(trimws(sample_data$rsid))
-        matched_data = inner_join(
-          sample_data,
-          ref,
-          by = c("rsid_join" = "rsid"),
-          relationship = "many-to-many"
-        )
-        matched_data = filter_matches_by_risk_allele(matched_data)
-        matched_data = collapse_matches_by_rsid(matched_data)
-        adn_list[[fname]] = sample_data
-        
-        sex_val = stats$Sex[stats$Fișier == fname][1]
-        
-        save_upload_to_db(
-          username = current_user(),
-          sample_name = fname,
-          sample_df = sample_data,
-          sex_value = sex_val,
-          matched_df = matched_data,
-          original_file_name = fname,
-          original_file_content = original_contents[[fname]]
-        )
-      }
+      ref = withProgress(
+        message = "🧬 Pregătire alele de risc",
+        detail = "Extrag alela de risc din rezultatele GWAS",
+        value = 0,
+        session = session,
+        {
+          incProgress(0.2, detail = "Normalizez câmpul STRONGEST SNP-RISK ALLELE", session = session)
+          prepared_ref = prepare_gwas_ref_for_join(ref)
+          incProgress(0.8, detail = "Alelele de risc au fost pregătite", session = session)
+          prepared_ref
+        }
+      )
+      ref_for_join = ref
+      matched_by_file = list()
+      
+      withProgress(
+        message = "🧬 Filtrare după alela de risc",
+        detail = "Se verifică genotipurile față de alelele raportate în GWAS",
+        value = 0,
+        session = session,
+        {
+          for (i in seq_along(adn_list)) {
+            # Salvăm separat variantele brute și potrivirile GWAS pentru fiecare fișier.
+            fname = names(adn_list)[i]
+            status_text(paste("⏳ Se filtrează după alela de risc pentru", fname))
+            incProgress(1 / max(1, length(adn_list)), detail = paste("Se procesează", fname), session = session)
+            
+            sample_data = adn_list[[i]]
+            sample_data$rsid_join = tolower(trimws(sample_data$rsid))
+            matched_data = inner_join(
+              sample_data,
+              ref_for_join,
+              by = c("rsid_join" = "rsid"),
+              relationship = "many-to-many"
+            )
+            
+            matched_before_filter = nrow(matched_data)
+            matched_data = filter_matches_by_prepared_risk_allele(matched_data)
+            matched_after_filter = nrow(matched_data)
+            matched_data = collapse_matches_by_rsid(matched_data)
+            adn_list[[fname]] = sample_data
+            matched_by_file[[fname]] = matched_data
+            
+            status_text(paste(
+              "⏳ Filtrare alelă de risc:", fname,
+              "- păstrate", matched_after_filter,
+              "din", matched_before_filter,
+              "asocieri. Se salvează în SQLite."
+            ))
+            
+            sex_val = stats$Sex[stats[[1]] == fname][1]
+            
+            save_upload_to_db(
+              username = current_user(),
+              sample_name = fname,
+              sample_df = sample_data,
+              sex_value = sex_val,
+              matched_df = matched_data,
+              original_file_name = fname,
+              original_file_content = original_contents[[fname]]
+            )
+          }
+        }
+      )
       
       new_session_data = list(adn = adn_list, ref = ref, stats = stats)
       app_data(merge_app_data(new_session_data))
@@ -2991,21 +3122,13 @@ server = function(input, output, session) {
   })
   
   output$dynamic_filtres = renderUI({
-    req(app_data())
-    cats = sort(unique(na.omit(app_data()$ref$categoria)))
-    selectizeInput("filter_topic", "Categorie", choices = c("Toate" = "all", cats), selected = "all")
+    NULL
   })
   
   observe({
-    req(app_data())
-    cats = sort(unique(na.omit(app_data()$ref$categoria)))
-    updateSelectizeInput(
-      session,
-      "filter_topic",
-      choices = c("Toate" = "all", cats),
-      selected = "all",
-      server = TRUE
-    )
+    # Filtrul pe categorie a fost eliminat din interfa??.
+    # Evit?m construirea unei liste mari de categorii GWAS dup? fiecare analiz?.
+    NULL
   })
   
   filtred_report = reactive({
@@ -3013,13 +3136,14 @@ server = function(input, output, session) {
     req(app_data())
     combined = bind_rows(app_data()$adn, .id = "Sursă")
     combined$rsid_join = tolower(combined$rsid)
+    ref_for_join = prepare_gwas_ref_for_join(app_data()$ref)
     report = inner_join(
       combined,
-      app_data()$ref,
+      ref_for_join,
       by = c("rsid_join" = "rsid"),
       relationship = "many-to-many"
     )
-    report = filter_matches_by_risk_allele(report)
+    report = filter_matches_by_prepared_risk_allele(report)
     report = collapse_matches_by_rsid(report)
     
     report$rsid = sprintf(
@@ -3037,10 +3161,6 @@ server = function(input, output, session) {
         report$pubmedid
       )
     )
-    
-    if (!is.null(input$filter_topic) && input$filter_topic != "all") {
-      report = report %>% filter(categoria == input$filter_topic)
-    }
     
     return(report)
   })
@@ -3063,8 +3183,9 @@ server = function(input, output, session) {
     req(app_data(), input$selected_sample)
     adn = app_data()$adn[[input$selected_sample]]
     adn$rsid_join = tolower(trimws(as.character(adn$rsid)))
-    df_merge = inner_join(adn, app_data()$ref, by = c("rsid_join" = "rsid"))
-    df_merge = filter_matches_by_risk_allele(df_merge)
+    ref_for_join = prepare_gwas_ref_for_join(app_data()$ref)
+    df_merge = inner_join(adn, ref_for_join, by = c("rsid_join" = "rsid"))
+    df_merge = filter_matches_by_prepared_risk_allele(df_merge)
     df_merge = collapse_matches_by_rsid(df_merge)
     return(df_merge)
   })
@@ -3366,15 +3487,13 @@ server = function(input, output, session) {
     if (length(sets) == 2) {
       only_1 = length(setdiff(sets[[1]], sets[[2]]))
       only_2 = length(setdiff(sets[[2]], sets[[1]]))
-      common_12 = length(intersect(sets[[1]], sets[[2]]))
       
       extra_df = data.frame(
         Indicator = c(
           paste("Doar", selected[1]),
-          paste("Doar", selected[2]),
-          "Comune între cele două fișiere"
+          paste("Doar", selected[2])
         ),
-        Valoare = as.character(c(only_1, only_2, common_12)),
+        Valoare = as.character(c(only_1, only_2)),
         stringsAsFactors = FALSE
       )
       summary_df = bind_rows(summary_df, extra_df)

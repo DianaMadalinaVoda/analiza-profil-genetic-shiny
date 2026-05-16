@@ -11,6 +11,7 @@ Proiectul a fost realizat pentru disertație și include atât o variantă compl
 - identificarea estimativă a sexului biologic pe baza markerilor X/Y;
 - căutare în GWAS Catalog local, cache SQLite și API `gwasrapidd`;
 - filtrarea rezultatelor GWAS după alela de risc prezentă în genotip;
+- mesaje de progres pentru pregătirea alelelor de risc, filtrarea genotipurilor și salvarea rezultatelor;
 - cache SQLite pentru evitarea interogărilor API repetate;
 - autentificare cu utilizatori și roluri;
 - cereri pentru rol admin, aprobare, respingere și revocare rol admin;
@@ -33,16 +34,18 @@ Aplicația nu caută doar numele SNP-ului. Fluxul de analiză este:
 
 Exemplu: dacă GWAS raportează `rs4877963-T`, dar genotipul utilizatorului este `AA`, rândul nu este păstrat. Dacă genotipul este `AT` sau `TT`, asocierea poate fi păstrată.
 
+În timpul procesării, interfața afișează separat etapele de pregătire a alelelor de risc și de filtrare a genotipurilor, deoarece aceste operații pot dura mai mult pentru fișiere ADN mari.
+
 ## Flux GWAS
 
 Aplicația folosește două moduri de lucru:
 
 ```text
 Local:
-cache SQLite -> GWAS Catalog local TSV -> API gwasrapidd pentru lipsuri
+cache SQLite -> GWAS Catalog local TSV -> API gwasrapidd pentru lipsuri -> filtrare după alela de risc
 
 shinyapps.io demo:
-cache SQLite -> API gwasrapidd limitat
+cache SQLite -> API gwasrapidd limitat -> filtrare după alela de risc
 ```
 
 În rularea locală, fișierul `gwas_catalog_associations.tsv` permite căutarea rapidă în GWAS Catalog. În demo-ul online, acest fișier este exclus deoarece este foarte mare, iar aplicația folosește API-ul pentru un număr limitat de rsID-uri.
@@ -64,6 +67,8 @@ demo_vcf_txt_fara_markeri_48.txt
 ```
 
 Aceste fișiere sunt utile pentru testarea aplicației fără utilizarea unor fișiere ADN reale. Numerele din numele fișierelor indică numărul de variante incluse.
+
+La compararea a două fișiere, aplicația afișează numărul de rsID-uri comune, numărul total de rsID-uri unice și rsID-urile specifice fiecărui fișier. La compararea a trei fișiere, sunt afișate suplimentar intersecțiile pereche și intersecția comună tuturor celor trei fișiere.
 
 ## Fișiere excluse de pe GitHub
 
@@ -137,6 +142,7 @@ rsconnect::deployApp(
 )
 ```
 
+Linkul generat de `shinyapps.io` poate fi transformat în cod QR pentru prezentarea disertației.
 
 ## Roluri utilizatori
 
