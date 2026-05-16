@@ -2404,12 +2404,12 @@ ui = fluidPage(
         display: none;
       }
       #shiny-notification-panel {
-        top: 76% !important;
-        right: 20px !important;
-        bottom: auto !important;
+        top: auto !important;
+        right: 24px !important;
+        bottom: 35px !important;
         left: auto !important;
         z-index: 10000 !important;
-        transform: translateY(-50%);
+        transform: none;
       }
       .shiny-notification {
         max-width: 420px;
@@ -3283,17 +3283,39 @@ server = function(input, output, session) {
       paste0("Analiza_genetica_", Sys.Date(), ".csv")
     },
     content = function(file) {
+      clean_html_text = function(x) {
+        x = as.character(x)
+        gsub("<[^>]+>", "", x)
+      }
+      
       data_to_save = tryCatch({
         filtred_report()
       }, error = function(e) {
         return(NULL)
       })
       if (is.null(data_to_save)) return(NULL)
-      data_to_save$rsid = gsub("<.*?>", "", as.character(data_to_save$rsid))
+      
+      # Tabelul din interfață conține linkuri HTML; la export păstrăm doar textul curat.
+      data_to_save$rsid = clean_html_text(data_to_save$rsid)
+      if ("pubmedid" %in% names(data_to_save)) {
+        data_to_save$pubmedid = clean_html_text(data_to_save$pubmedid)
+      }
+      
       if ("rsid_join" %in% names(data_to_save)) {
         data_to_save$rsid_join <- NULL
       }
-      write.csv(data_to_save, file, row.names = FALSE, na = "")
+      
+      con = file(file, open = "wb")
+      on.exit(close(con), add = TRUE)
+      writeBin(as.raw(c(0xEF, 0xBB, 0xBF)), con)
+      write.table(
+        data_to_save,
+        con,
+        sep = ";",
+        row.names = FALSE,
+        na = "",
+        fileEncoding = "UTF-8"
+      )
     },
     contentType = "text/csv"
   )
@@ -3303,7 +3325,10 @@ server = function(input, output, session) {
     content = function(file) {
       d_indiv = indiv_data()
       d_indiv = d_indiv[, !(names(d_indiv) %in% "rsid_join")]
-      write.csv(d_indiv, file, row.names = FALSE)
+      con = file(file, open = "wb")
+      on.exit(close(con), add = TRUE)
+      writeBin(as.raw(c(0xEF, 0xBB, 0xBF)), con)
+      write.table(d_indiv, con, sep = ";", row.names = FALSE, na = "", fileEncoding = "UTF-8")
     }
   )
   
