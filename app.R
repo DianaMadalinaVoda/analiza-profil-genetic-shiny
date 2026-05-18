@@ -1178,12 +1178,6 @@ get_gwas_data_smart = function(rsids, progress_callback = NULL) {
   # API-ul este fallback: primește doar rsid-uri negăsite în cache sau local.
   missing_for_api = setdiff(rsids, union(cached_done, local_found))
   api_limit = if (is_running_on_shinyapps()) min(gwas_api_max_new_rsids, 20) else gwas_api_max_new_rsids
-  if (is_running_on_shinyapps() && nrow(cached_ref) > 0) {
-    api_limit = 0
-  }
-  if (is_running_on_shinyapps() && length(missing_for_api) > api_limit) {
-    save_gwas_requested_rsids(missing_for_api)
-  }
   api_message = if (has_local_gwas) {
     "Se interoghează API doar pentru rsid-urile lipsă"
   } else {
@@ -2181,7 +2175,7 @@ draw_venn_png = function(sets, file) {
   
   op = par(mar = c(1, 1, 3, 1))
   on.exit(par(op), add = TRUE)
-  plot(0, 0, type = "n", xlim = c(0, 10), ylim = c(0, 8), axes = FALSE, xlab = "", ylab = "", asp = 1, main = "Diagramă Venn - potriviri rsID")
+  plot(0, 0, type = "n", xlim = c(0, 10), ylim = c(0, 8), axes = FALSE, xlab = "", ylab = "", asp = 1, main = "Diagramă Venn - asocieri rsID")
   
   if (length(sets) == 2) {
     only_1 = length(setdiff(sets[[1]], sets[[2]]))
@@ -3209,7 +3203,7 @@ server = function(input, output, session) {
     report = collapse_matches_by_rsid(report)
     
     report$rsid = sprintf(
-      '<a href="https://www.ebi.ac.uk/gwas/search?query=%s" target="_blank">%s</a>',
+      '<a href="https://www.ebi.ac.uk/gwas/labs/variants/%s" target="_blank">%s</a>',
       report$rsid_join,
       report$rsid
     )
@@ -3262,7 +3256,7 @@ server = function(input, output, session) {
     if (total_variante == 0) return(data.frame(Status = "Lipsă date"))
     
     data.frame(
-      "Potriviri" = total_variante,
+      "Asocieri" = total_variante,
       "Gene" = total_gene
     )
   })
@@ -3443,7 +3437,7 @@ server = function(input, output, session) {
       draw_pdf_block("Rezumat profil", x = 0.07, y = 0.80, cex = 1.15, font = 2)
       draw_pdf_block(paste("Profil selectat:", sample_name), x = 0.07, y = 0.74, cex = 1.0, width = 55)
       draw_pdf_block(paste("Sex detectat:", sex_value[1]), x = 0.07, y = 0.68, cex = 1.0)
-      draw_pdf_block(paste("Potriviri totale cu GWAS:", total_matches), x = 0.07, y = 0.62, cex = 1.0)
+      draw_pdf_block(paste("Asocieri totale cu GWAS:", total_matches), x = 0.07, y = 0.62, cex = 1.0)
       draw_pdf_block(paste("Gene unice:", total_genes), x = 0.07, y = 0.56, cex = 1.0)
       draw_pdf_block(paste("Mapped traits unice:", total_traits), x = 0.07, y = 0.50, cex = 1.0)
       
@@ -3624,7 +3618,7 @@ server = function(input, output, session) {
       
       plot_ly(type = "scatter", mode = "text") %>%
         layout(
-          title = "Diagramă Venn - potriviri rsID",
+          title = "Diagramă Venn - asocieri rsID",
           xaxis = list(visible = FALSE, range = c(0, 10)),
           yaxis = list(visible = FALSE, range = c(0, 7), scaleanchor = "x"),
           shapes = list(
@@ -3650,7 +3644,7 @@ server = function(input, output, session) {
       
       plot_ly(type = "scatter", mode = "text") %>%
         layout(
-          title = "Diagramă Venn - potriviri rsID",
+          title = "Diagramă Venn - asocieri rsID",
           xaxis = list(visible = FALSE, range = c(0, 10)),
           yaxis = list(visible = FALSE, range = c(0, 8), scaleanchor = "x"),
           shapes = list(
@@ -4034,7 +4028,7 @@ server = function(input, output, session) {
     req(nrow(matches_df) > 0)
     
     matches_df$rsid = sprintf(
-      '<a href="https://www.ebi.ac.uk/gwas/search?query=%s" target="_blank">%s</a>',
+      '<a href="https://www.ebi.ac.uk/gwas/labs/variants/%s" target="_blank">%s</a>',
       matches_df$rsid,
       matches_df$rsid
     )

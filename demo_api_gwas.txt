@@ -1,0 +1,16 @@
+# Fișier demo pentru testarea ramurii API GWAS.
+# Aceste rsID-uri au fost găsite în rezultate recente din GWAS Catalog API,
+# dar nu apar în gwas_catalog_associations.tsv local.
+# Format compatibil 23andMe.
+# rsid	chromosome	position	genotype
+rs1042714	5	148206440	CG
+rs1028590	1	1000001	AG
+rs10411270	19	1000002	CT
+rs10458603	6	1000003	AG
+rs10753570	9	1000004	CT
+rs10811672	9	1000005	AG
+rs10926341	2	1000006	CT
+rs1108445	7	1000007	AG
+rs11119941	4	1000008	CT
+rs11204756	1	1000009	AG
+rs11240713	3	1000010	CT
