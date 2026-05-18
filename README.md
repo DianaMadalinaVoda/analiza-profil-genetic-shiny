@@ -114,7 +114,7 @@ Varianta folosită:
 
 ```text
 All associations v1.0.2 - with added ontology annotations,
-GWAS Catalog study accession numbers and genotyping technology
+GWAS Catalog study accession numbers and genotyping technology (Download (full list))
 ```
 
 6. Pune fișierul `gwas_catalog_associations.tsv` în folderul aplicației, lângă `app.R`.
