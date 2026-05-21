@@ -24,7 +24,6 @@ options(timeout = 600)
 options(shiny.maxRequestSize = 1024 * 1024 * 1024)
 
 # Setări principale ale aplicației: fișierul GWAS local, baza de date și limitele pentru API.
-# Pentru publicare pe shinyapps.io, fișierul GWAS este căutat prima dată în folderul aplicației.
 # Fișierul GWAS Catalog poate fi descărcat de aici:
 # https://www.ebi.ac.uk/gwas/docs/file-downloads
 gwas_file_path = "gwas_catalog_associations.tsv"
@@ -43,8 +42,13 @@ gwas_cache_lookup_chunk_size = 400
 gwas_cache_fetch_chunk_size = 150
 gwas_max_workers = 4
 gwas_api_max_new_rsids = 20
+sex_detection_large_file_min_snps = 1000
+sex_detection_y_min_count = 1000
+sex_detection_y_min_ratio = 0.005
+sex_detection_y_noise_ratio = 0.0005
+sex_detection_x_min_count = 1000
+sex_detection_x_min_ratio = 0.003
 enable_risk_allele_filter = TRUE
-gwas_api_max_associations_online = 120
 
 # Culori pastel folosite în grafice și în elementele vizuale ale aplicației.
 pastel_colors = c("#FFFFCC", "#CCEBC5", "#DECBE4", "#FBB4AE", "#E5D8BD", "#B3CDE3", "#FDDAEC", "#C9E4DE","#EFD3D7", 
@@ -64,12 +68,6 @@ clean_column_names = function(x) {
   x = gsub("[^a-z0-9]+", "_", x)
   x = gsub("^_+|_+$", "", x)
   x
-}
-
-is_running_on_shinyapps = function() {
-  nzchar(Sys.getenv("SHINY_PORT")) ||
-    nzchar(Sys.getenv("SHINY_SERVER_VERSION")) ||
-    grepl("shinyapps", Sys.getenv("R_CONFIG_ACTIVE"), ignore.case = TRUE)
 }
 
 # Împarte vectorii mari în bucăți mai mici, util pentru SQLite și pentru interogările API.
@@ -92,10 +90,6 @@ resolve_gwas_file_path = function() {
 
 # Alege un număr rezonabil de procese paralele, fără să blocheze complet calculatorul.
 get_parallel_worker_count = function(task_count) {
-  if (is_running_on_shinyapps()) {
-    return(1)
-  }
-  
   available = parallel::detectCores(logical = TRUE)
   if (is.na(available) || available < 1) {
     available = 1
@@ -201,34 +195,102 @@ convert_vcf_gt_to_genotype = function(gt, ref, alt) {
 
 
 # Detectează formatul fișierului încărcat și îl transformă într-un format comun.
-read_adn_data = function(file_path) {
-  # Primele linii sunt suficiente pentru a identifica formatul fără să citim tot fișierul de două ori.
-  header_lines = readLines(file_path, n = 30, warn = FALSE, encoding = "UTF-8")
+detect_declared_sex_from_filename = function(file_name) {
+  file_name = tolower(basename(as.character(file_name)))
+  
+  sex_match = regexec("sex[_-]?(xy|xx|unknown)", file_name, ignore.case = TRUE)
+  sex_parts = regmatches(file_name, sex_match)[[1]]
+  
+  if (length(sex_parts) == 0) {
+    return(NA_character_)
+  }
+  
+  declared_sex = tolower(sex_parts[2])
+  
+  if (identical(declared_sex, "xy")) {
+    return("Masculin")
+  }
+  
+  if (identical(declared_sex, "xx")) {
+    return("Feminin")
+  }
+  
+  if (identical(declared_sex, "unknown")) {
+    return("Necunoscut")
+  }
+  
+  NA_character_
+}
+
+read_adn_data = function(file_path, original_file_name = NULL) {
+  # Citim un bloc mai mare, deoarece fișierele VCF pot avea multe linii de metadate înainte de #CHROM.
+  header_lines = readLines(file_path, n = 1000, warn = FALSE, encoding = "UTF-8")
   header_text = paste(header_lines, collapse = "\n")
   
   # Aplicația acceptă formate diferite, dar toate sunt convertite ulterior la aceleași coloane:
   # rsid, cromozom și genotip.
   is_ftdna = any(grepl("^RSID,CHROMOSOME,POSITION,RESULT", header_lines, ignore.case = TRUE))
+  vcf_header_index = grep("^#CHROM\\s+POS\\s+ID\\s+REF\\s+ALT", header_lines, ignore.case = TRUE)
   is_vcf = any(grepl("^##fileformat=VCF", header_lines, ignore.case = TRUE)) ||
-    any(grepl("^#CHROM\\tPOS\\tID\\tREF\\tALT\\tQUAL\\tFILTER\\tINFO", header_lines, ignore.case = TRUE))
+    length(vcf_header_index) > 0
   is_23andme = grepl("23andMe", header_text, ignore.case = TRUE) ||
     any(grepl("^#\\s*rsid\\tchromosome\\tposition\\tgenotype", header_lines, ignore.case = TRUE))
   is_ancestry = grepl("AncestryDNA", header_text, ignore.case = TRUE) ||
     any(grepl("^rsid\\tchromosome\\tposition\\tallele1\\tallele2$", header_lines, ignore.case = TRUE))
+  first_data_line_index = which(nzchar(trimws(header_lines)) & !grepl("^#", trimws(header_lines)))[1]
+  first_data_line = if (is.na(first_data_line_index)) NA_character_ else header_lines[first_data_line_index]
+  is_headerless_genotype = !is.na(first_data_line) &&
+    grepl("^rs[0-9]+[,[:space:]]+[0-9XYMTA-Za-z]+[,[:space:]]+[0-9]+[,[:space:]]+[A-Za-z-]+", first_data_line, ignore.case = TRUE)
   
   df = tryCatch({
     if (is_vcf) {
-      header_index = grep("^#CHROM\\tPOS\\tID\\tREF\\tALT\\tQUAL\\tFILTER\\tINFO", header_lines, ignore.case = TRUE)
-      read.table(
+      if (length(vcf_header_index) == 0) {
+        return(NULL)
+      }
+      
+      vcf_col_names = strsplit(trimws(header_lines[vcf_header_index[1]]), "\\s+")[[1]]
+      vcf_col_names[1] = sub("^#", "", vcf_col_names[1])
+      vcf_preview_lines = header_lines[(vcf_header_index[1] + 1):length(header_lines)]
+      vcf_preview_lines = vcf_preview_lines[nzchar(trimws(vcf_preview_lines))]
+      vcf_field_count = if (length(vcf_preview_lines) == 0) {
+        length(vcf_col_names)
+      } else {
+        max(lengths(strsplit(vcf_preview_lines, "\t", fixed = TRUE)))
+      }
+      if (vcf_field_count > length(vcf_col_names)) {
+        vcf_col_names = c(vcf_col_names, paste0("extra_", seq_len(vcf_field_count - length(vcf_col_names))))
+      }
+      # Unele fișiere VCF au tab-uri finale sau câmpuri suplimentare accidentale.
+      # Coloanele extra sunt ignorate ulterior, dar previn respingerea fișierului la citire.
+      vcf_col_names = c(vcf_col_names, paste0("extra_padding_", seq_len(10)))
+      
+      vcf_df = read.table(
         file_path,
-        header = TRUE,
+        header = FALSE,
         sep = "\t",
-        skip = header_index[1] - 1,
+        skip = vcf_header_index[1],
+        col.names = vcf_col_names,
         stringsAsFactors = FALSE,
         fill = TRUE,
         check.names = FALSE,
         comment.char = ""
       )
+      
+      if (ncol(vcf_df) < 8) {
+        vcf_df = read.table(
+          file_path,
+          header = FALSE,
+          sep = "",
+          skip = vcf_header_index[1],
+          col.names = vcf_col_names,
+          stringsAsFactors = FALSE,
+          fill = TRUE,
+          check.names = FALSE,
+          comment.char = ""
+        )
+      }
+      
+      vcf_df
     } else if (is_ftdna) {
       read.table(
         file_path,
@@ -252,6 +314,20 @@ read_adn_data = function(file_path) {
         check.names = FALSE,
         comment.char = ""
       )
+    } else if (is_headerless_genotype) {
+      sep_guess = if (grepl(",", first_data_line, fixed = TRUE)) "," else ""
+      raw_df = read.table(
+        file_path,
+        header = FALSE,
+        sep = sep_guess,
+        stringsAsFactors = FALSE,
+        fill = TRUE,
+        check.names = FALSE,
+        quote = "\"",
+        comment.char = "#"
+      )
+      colnames(raw_df)[seq_len(min(4, ncol(raw_df)))] = c("rsid", "chromosome", "position", "genotype")[seq_len(min(4, ncol(raw_df)))]
+      raw_df
     } else if (is_ancestry) {
       read.table(
         file_path,
@@ -263,7 +339,6 @@ read_adn_data = function(file_path) {
         check.names = FALSE
       )
     } else {
-      first_data_line = header_lines[which(nzchar(trimws(header_lines)))[1]]
       sep_guess = if (grepl(",", first_data_line, fixed = TRUE)) "," else "\t"
       read.table(
         file_path,
@@ -356,13 +431,47 @@ read_adn_data = function(file_path) {
   res$genotype = gsub("[^A-Z]", "-", res$genotype)
   res$chrom = normalize_chrom_value(res$chrom)
   
-  # Detectarea sexului este orientativă și se bazează pe prezența markerilor X/Y.
-  has_y = any(res$chrom == "Y", na.rm = TRUE)
-  has_x = any(res$chrom == "X", na.rm = TRUE)
+  # Detectarea sexului este orientativă. Semnalele X/Y slabe sau amestecate sunt tratate ca necunoscute.
+  total_valid_markers = nrow(res)
+  y_marker_count = sum(res$chrom == "Y", na.rm = TRUE)
+  x_marker_count = sum(res$chrom == "X", na.rm = TRUE)
+  y_marker_ratio = y_marker_count / max(1, total_valid_markers)
+  x_marker_ratio = x_marker_count / max(1, total_valid_markers)
+  has_y_signal = if (total_valid_markers < sex_detection_large_file_min_snps) {
+    y_marker_count > 0
+  } else {
+    y_marker_count >= sex_detection_y_min_count &&
+      y_marker_ratio >= sex_detection_y_min_ratio
+  }
+  has_x_signal = if (total_valid_markers < sex_detection_large_file_min_snps) {
+    x_marker_count > 0
+  } else {
+    x_marker_count >= sex_detection_x_min_count &&
+      x_marker_ratio >= sex_detection_x_min_ratio
+  }
+  has_y_noise = if (total_valid_markers < sex_detection_large_file_min_snps) {
+    FALSE
+  } else {
+    y_marker_count > 0 && y_marker_ratio > sex_detection_y_noise_ratio
+  }
   
-  if (has_y) {
+  declared_sex_from_filename = detect_declared_sex_from_filename(original_file_name)
+  
+  if (identical(declared_sex_from_filename, "Masculin") || identical(declared_sex_from_filename, "Feminin")) {
+    sex_status = declared_sex_from_filename
+  } else if (identical(declared_sex_from_filename, "Necunoscut")) {
+    # Pentru fișierele marcate explicit ca sex_unknown păstrăm regula simplă:
+    # orice marker Y indică profil masculin, altfel prezența X indică profil feminin.
+    if (y_marker_count > 0) {
+      sex_status = "Masculin"
+    } else if (x_marker_count > 0) {
+      sex_status = "Feminin"
+    } else {
+      sex_status = "Necunoscut (Lipsă markeri sexuali)"
+    }
+  } else if (has_y_signal) {
     sex_status = "Masculin"
-  } else if (has_x) {
+  } else if (has_x_signal && !has_y_noise) {
     sex_status = "Feminin"
   } else {
     sex_status = "Necunoscut (Lipsă markeri sexuali)"
@@ -522,9 +631,6 @@ read_gwas_data_online = function(variant_ids) {
   }
   
   association_ids = unique(associations_obj@associations$association_id)
-  if (is_running_on_shinyapps() && length(association_ids) > gwas_api_max_associations_online) {
-    association_ids = association_ids[seq_len(gwas_api_max_associations_online)]
-  }
   
   if (length(association_ids) == 0) {
     return(empty_gwas_ref())
@@ -938,7 +1044,7 @@ collapse_matches_by_rsid = function(df) {
   }
   
   rsid_col = if ("rsid_join" %in% names(df)) "rsid_join" else "rsid"
-  group_cols = intersect(c("Sursă", "Sursa", "sample_id", rsid_col, "genotype"), names(df))
+  group_cols = intersect(c("Sursa", "Sursă", "sample_id", rsid_col, "genotype"), names(df))
   
   if (length(group_cols) == 0 || !"p_value" %in% names(df)) {
     return(df %>% distinct())
@@ -1136,7 +1242,7 @@ get_gwas_data_cached = function(variant_ids, progress_callback = NULL) {
 
 # Obține date GWAS în ordinea corectă.
 # Dacă TSV-ul local există: cache SQLite -> fișier local -> API doar pentru lipsuri.
-# Dacă TSV-ul local lipsește: cache SQLite -> API limitat, util pentru demo online pe shinyapps.io.
+# Dacă TSV-ul local lipsește: cache SQLite -> API limitat.
 get_gwas_data_smart = function(rsids, progress_callback = NULL) {
   # Funcția principală a fluxului GWAS, folosită atât local, cât și online.
   notify_progress = function(step, total, message) {
@@ -1177,7 +1283,7 @@ get_gwas_data_smart = function(rsids, progress_callback = NULL) {
   
   # API-ul este fallback: primește doar rsid-uri negăsite în cache sau local.
   missing_for_api = setdiff(rsids, union(cached_done, local_found))
-  api_limit = if (is_running_on_shinyapps()) min(gwas_api_max_new_rsids, 20) else gwas_api_max_new_rsids
+  api_limit = gwas_api_max_new_rsids
   api_message = if (has_local_gwas) {
     "Se interoghează API doar pentru rsid-urile lipsă"
   } else {
@@ -1185,7 +1291,7 @@ get_gwas_data_smart = function(rsids, progress_callback = NULL) {
   }
   notify_progress(3, 5, api_message)
   
-  # Limita protejează aplicația de interogări foarte mari, utile mai ales pe shinyapps.io.
+  # Limita protejează aplicația de interogări foarte mari.
   api_rsids = head(missing_for_api, api_limit)
   api_ref = empty_gwas_ref()
   
@@ -2167,9 +2273,43 @@ make_chrom_summary = function(df_raw) {
     arrange(chrom)
 }
 
+# Scurtează numele lungi doar pentru afișare; valorile interne rămân numele complete.
+short_file_label = function(x, max_chars = 36) {
+  x = as.character(x)
+  vapply(x, function(value) {
+    if (is.na(value) || !nzchar(value) || nchar(value) <= max_chars) {
+      return(value)
+    }
+    
+    ext = tools::file_ext(value)
+    suffix = if (nzchar(ext)) paste0(".", ext) else ""
+    available = max_chars - nchar(suffix) - 3
+    
+    if (available < 10) {
+      return(paste0(substr(value, 1, max_chars - 3), "..."))
+    }
+    
+    paste0(substr(value, 1, available), "...", suffix)
+  }, character(1), USE.NAMES = FALSE)
+}
+
+make_labeled_choices = function(values, max_chars = 42) {
+  values = as.character(values)
+  setNames(values, short_file_label(values, max_chars))
+}
+
+# Pentru grafice folosim o etichetă foarte scurtă, dar păstrăm numele complet în tooltip.
+make_plot_sample_label = function(x, max_chars = 24) {
+  x = tools::file_path_sans_ext(as.character(x))
+  extracted = sub("^(user[0-9]+_file[0-9]+).*$", "\\1", x, ignore.case = TRUE)
+  unchanged = identical(length(extracted), length(x)) & extracted == x
+  extracted[unchanged] = short_file_label(x[unchanged], max_chars)
+  extracted
+}
+
 # Desenează aceeași diagrama Venn într-un fișier PNG pentru descărcare.
 draw_venn_png = function(sets, file) {
-  selected = names(sets)
+  selected = short_file_label(names(sets), 28)
   grDevices::png(file, width = 1200, height = 800, res = 130)
   on.exit(grDevices::dev.off(), add = TRUE)
   
@@ -2410,6 +2550,24 @@ ui = fluidPage(
         white-space: normal;
         word-break: break-word;
       }
+      .selectize-control.multi .selectize-input > div,
+      .selectize-dropdown .option {
+        max-width: 100%;
+        white-space: normal;
+        word-break: break-word;
+      }
+      .selectize-control.single .selectize-input {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        padding-right: 38px !important;
+      }
+      .selectize-control.single .selectize-input > div {
+        max-width: calc(100% - 22px);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
       #startup_splash {
         position: fixed;
         inset: 0;
@@ -2529,7 +2687,7 @@ ui = fluidPage(
             br(),
             withSpinner(tableOutput("status_table"), type = 6, color = "#2c3e50"),
             hr(),
-            withSpinner(plotlyOutput("stats_bar_plot", height = "300px"), type = 6, color = "#2c3e50")
+            withSpinner(plotlyOutput("stats_bar_plot", height = "380px"), type = 6, color = "#2c3e50")
           ),
           tabPanel(
             "🔗 Interpretare genetică", value = "interpretare",
@@ -2665,7 +2823,7 @@ server = function(input, output, session) {
     updateSelectizeInput(
       session,
       "compare_samples",
-      choices = choices,
+      choices = make_labeled_choices(choices, 44),
       selected = selected,
       server = FALSE
     )
@@ -2931,18 +3089,22 @@ server = function(input, output, session) {
         stringsAsFactors = FALSE
       )
       original_contents = list()
+      invalid_files = character()
       
       for (i in seq_len(nrow(input$adn_files))) {
         # Fiecare fișier încărcat este convertit la structură standard rsid/chrom/genotype.
-        res = read_adn_data(input$adn_files$datapath[i])
+        fname = input$adn_files$name[i]
+        res = read_adn_data(
+          input$adn_files$datapath[i],
+          original_file_name = input$adn_files$name[i]
+        )
         
         if (!is.null(res)) {
-          fname = input$adn_files$name[i]
           sample_data = res$data
           adn_list[[fname]] = sample_data
           original_contents[[fname]] = read_text_file_content(input$adn_files$datapath[i])
           
-          sex_val = if (is.null(res$sex) || length(res$sex) == 0) "Necunoscut (Lipsă markeri sexuali)" else res$sex
+          sex_val = if (is.null(res$sex) || length(res$sex) == 0) "Necunoscut (markeri sexuali lipsă sau ambigui)" else res$sex
           
           stats = rbind(
             stats,
@@ -2953,7 +3115,20 @@ server = function(input, output, session) {
               stringsAsFactors = FALSE
             )
           )
+        } else {
+          invalid_files = c(invalid_files, fname)
         }
+      }
+      
+      if (length(invalid_files) > 0) {
+        showNotification(
+          paste(
+            "Următoarele fișiere nu au putut fi citite ca fișiere ADN valide:",
+            paste(short_file_label(invalid_files, 36), collapse = ", ")
+          ),
+          type = "warning",
+          duration = 15
+        )
       }
       
       if (length(adn_list) == 0) {
@@ -3112,10 +3287,18 @@ server = function(input, output, session) {
       new_session_data = list(adn = adn_list, ref = ref, stats = stats)
       app_data(merge_app_data(new_session_data))
       session_names = names(app_data()$adn)
-      updateSelectInput(session, "selected_sample", choices = session_names, selected = tail(session_names, 1))
+      updateSelectInput(session, "selected_sample", choices = make_labeled_choices(session_names, 46), selected = tail(session_names, 1))
       refresh_compare_samples(selected = head(session_names, 2))
       history_refresh(history_refresh() + 1)
-      status_text("✅ Analiza este finalizată. Rezultatele GWAS au fost combinate și salvate în SQLite.")
+      final_message = "✅ Analiza este finalizată. Rezultatele GWAS au fost combinate și salvate în SQLite."
+      if (length(invalid_files) > 0) {
+        final_message = paste(
+          final_message,
+          "Fișiere ignorate deoarece nu au fost recunoscute:",
+          paste(short_file_label(invalid_files, 36), collapse = ", ")
+        )
+      }
+      status_text(final_message)
       TRUE
     }, error = function(e) {
       status_text(paste("❌ Eroare:", conditionMessage(e)))
@@ -3133,6 +3316,9 @@ server = function(input, output, session) {
   output$status_table = renderTable({
     req(app_data())
     df_stats = app_data()$stats
+    if ("Fișier" %in% names(df_stats)) {
+      df_stats$Fișier = short_file_label(df_stats$Fișier, 44)
+    }
     if ("Sex" %in% names(df_stats)) {
       df_stats$Sex = add_sex_icon(df_stats$Sex)
     }
@@ -3143,11 +3329,7 @@ server = function(input, output, session) {
     req(app_data())
     
     df_stats = app_data()$stats
-    df_stats$Eticheta = tools::file_path_sans_ext(df_stats[[names(df_stats)[1]]])
-    df_stats$Eticheta = gsub("^demo_", "", df_stats$Eticheta)
-    df_stats$Eticheta = gsub("_50$", "", df_stats$Eticheta)
-    df_stats$Eticheta = gsub("_", " ", df_stats$Eticheta)
-    df_stats$Eticheta = stringr::str_to_title(df_stats$Eticheta)
+    df_stats$Eticheta = make_plot_sample_label(df_stats[[names(df_stats)[1]]])
     df_stats$Tooltip = paste0(
       "Fișier: ", df_stats[[names(df_stats)[1]]],
       "<br>SNP-uri: ", df_stats$SNP,
@@ -3159,12 +3341,13 @@ server = function(input, output, session) {
       scale_fill_manual(values = c(
         "Masculin" = "#B3CDE3",
         "Feminin" = "#FBB4AE",
-        "Necunoscut (Lipsă markeri sexuali)" = "#FFFFCC"
+        "Necunoscut (Lipsă markeri sexuali)" = "#FFFFCC",
+        "Necunoscut (markeri sexuali lipsă sau ambigui)" = "#FFFFCC"
       )) +
       theme_minimal() +
       theme(
-        axis.text.x = element_text(angle = 35, hjust = 1, size = 10),
-        plot.margin = margin(10, 20, 55, 10)
+        axis.text.x = element_text(angle = 20, hjust = 1, size = 10),
+        plot.margin = margin(10, 20, 45, 10)
       ) +
       labs(
         title = "Distribuția variantelor genetice și sexul detectat",
@@ -3174,7 +3357,7 @@ server = function(input, output, session) {
       )
     
     ggplotly(p, tooltip = "text") %>%
-      layout(margin = list(b = 95))
+      layout(margin = list(b = 70))
   })
   
   output$dynamic_filtres = renderUI({
@@ -3190,7 +3373,7 @@ server = function(input, output, session) {
   filtred_report = reactive({
     # Combină variantele ADN cu adnotările GWAS și pregătește linkurile pentru tabel.
     req(app_data())
-    combined = bind_rows(app_data()$adn, .id = "Sursă")
+    combined = bind_rows(app_data()$adn, .id = "Sursa")
     combined$rsid_join = tolower(combined$rsid)
     ref_for_join = prepare_gwas_ref_for_join(app_data()$ref)
     report = inner_join(
@@ -3361,17 +3544,24 @@ server = function(input, output, session) {
         data_to_save$rsid_join <- NULL
       }
       
-      con = file(file, open = "wb")
-      on.exit(close(con), add = TRUE)
-      writeBin(as.raw(c(0xEF, 0xBB, 0xBF)), con)
+      names(data_to_save)[names(data_to_save) %in% c("Sursă", "SursÄƒ", "Surs?")] = "Sursa"
+      
+      temp_csv = tempfile(fileext = ".csv")
       write.table(
         data_to_save,
-        con,
+        temp_csv,
         sep = ";",
         row.names = FALSE,
         na = "",
+        quote = TRUE,
+        qmethod = "double",
         fileEncoding = "UTF-8"
       )
+      
+      con = file(file, open = "wb")
+      on.exit(close(con), add = TRUE)
+      writeBin(as.raw(c(0xEF, 0xBB, 0xBF)), con)
+      writeBin(readBin(temp_csv, what = "raw", n = file.info(temp_csv)$size), con)
     },
     contentType = "text/csv"
   )
@@ -3548,6 +3738,7 @@ server = function(input, output, session) {
     validate(need(!is.null(sets), "Selectează cel puțin două fișiere pentru comparație."))
     validate(need(is.null(sets$error), sets$error))
     selected = names(sets)
+    selected_display = short_file_label(selected, 34)
     common_all = Reduce(intersect, sets)
     union_all = Reduce(union, sets)
     
@@ -3558,7 +3749,7 @@ server = function(input, output, session) {
         "rsID-uri totale unice"
       ),
       Valoare = as.character(c(
-        paste(selected, collapse = " | "),
+        paste(selected_display, collapse = " | "),
         length(common_all),
         length(union_all)
       )),
@@ -3571,8 +3762,8 @@ server = function(input, output, session) {
       
       extra_df = data.frame(
         Indicator = c(
-          paste("Doar", selected[1]),
-          paste("Doar", selected[2])
+          paste("Doar", selected_display[1]),
+          paste("Doar", selected_display[2])
         ),
         Valoare = as.character(c(only_1, only_2)),
         stringsAsFactors = FALSE
@@ -3583,12 +3774,12 @@ server = function(input, output, session) {
     if (length(sets) == 3) {
       extra_df = data.frame(
         Indicator = c(
-          paste("Doar", selected[1]),
-          paste("Doar", selected[2]),
-          paste("Doar", selected[3]),
-          paste("Comune", selected[1], "+", selected[2]),
-          paste("Comune", selected[1], "+", selected[3]),
-          paste("Comune", selected[2], "+", selected[3])
+          paste("Doar", selected_display[1]),
+          paste("Doar", selected_display[2]),
+          paste("Doar", selected_display[3]),
+          paste("Comune", selected_display[1], "+", selected_display[2]),
+          paste("Comune", selected_display[1], "+", selected_display[3]),
+          paste("Comune", selected_display[2], "+", selected_display[3])
         ),
         Valoare = as.character(c(
           length(setdiff(sets[[1]], union(sets[[2]], sets[[3]]))),
@@ -3610,6 +3801,7 @@ server = function(input, output, session) {
     sets = compare_sets()
     req(!is.null(sets), is.null(sets$error))
     selected = names(sets)
+    selected_display = short_file_label(selected, 28)
     
     if (length(sets) == 2) {
       only_1 = length(setdiff(sets[[1]], sets[[2]]))
@@ -3626,8 +3818,8 @@ server = function(input, output, session) {
             list(type = "circle", x0 = 4.0, x1 = 8.5, y0 = 1.2, y1 = 5.7, fillcolor = "rgba(251,180,174,0.45)", line = list(color = "#2c3e50"))
           ),
           annotations = list(
-            list(x = 2.6, y = 5.9, text = selected[1], showarrow = FALSE),
-            list(x = 7.4, y = 5.9, text = selected[2], showarrow = FALSE),
+            list(x = 2.6, y = 5.9, text = selected_display[1], showarrow = FALSE),
+            list(x = 7.4, y = 5.9, text = selected_display[2], showarrow = FALSE),
             list(x = 2.8, y = 3.4, text = as.character(only_1), showarrow = FALSE, font = list(size = 18)),
             list(x = 7.2, y = 3.4, text = as.character(only_2), showarrow = FALSE, font = list(size = 18)),
             list(x = 5.0, y = 3.4, text = as.character(common_12), showarrow = FALSE, font = list(size = 18))
@@ -3653,9 +3845,9 @@ server = function(input, output, session) {
             list(type = "circle", x0 = 2.7, x1 = 7.3, y0 = 0.7, y1 = 5.3, fillcolor = "rgba(204,235,197,0.40)", line = list(color = "#2c3e50"))
           ),
           annotations = list(
-            list(x = 2.5, y = 7.2, text = selected[1], showarrow = FALSE),
-            list(x = 7.5, y = 7.2, text = selected[2], showarrow = FALSE),
-            list(x = 5.0, y = 0.5, text = selected[3], showarrow = FALSE),
+            list(x = 2.5, y = 7.2, text = selected_display[1], showarrow = FALSE),
+            list(x = 7.5, y = 7.2, text = selected_display[2], showarrow = FALSE),
+            list(x = 5.0, y = 0.5, text = selected_display[3], showarrow = FALSE),
             list(x = 2.8, y = 5.3, text = as.character(only_1), showarrow = FALSE, font = list(size = 17)),
             list(x = 7.2, y = 5.3, text = as.character(only_2), showarrow = FALSE, font = list(size = 17)),
             list(x = 5.0, y = 2.1, text = as.character(only_3), showarrow = FALSE, font = list(size = 17)),
@@ -3853,7 +4045,7 @@ server = function(input, output, session) {
       choice_labels = paste0(history_df$upload_id, " - ", history_df$sample_name, " - ", history_df$created_at)
     }
     
-    choices = setNames(history_df$upload_id, choice_labels)
+    choices = setNames(history_df$upload_id, short_file_label(choice_labels, 64))
     selectizeInput(
       "selected_history_upload",
       "Alege fișierele salvate",
@@ -3936,7 +4128,7 @@ server = function(input, output, session) {
     if (!selected_sample %in% session_names) {
       selected_sample = tail(session_names, 1)
     }
-    updateSelectInput(session, "selected_sample", choices = session_names, selected = selected_sample)
+    updateSelectInput(session, "selected_sample", choices = make_labeled_choices(session_names, 46), selected = selected_sample)
     refresh_compare_samples(selected = character(0))
     updateSelectizeInput(session, "selected_history_upload", selected = character(0))
     
