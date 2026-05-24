@@ -89,12 +89,153 @@ resolve_gwas_file_path = function() {
 }
 
 # Alege un număr rezonabil de procese paralele, fără să blocheze complet calculatorul.
+# Unele exporturi FTDNA/CSV au fiecare rand de date pus intre ghilimele,
+# iar virgulele reale raman in interiorul acelui camp. Normalizam randurile
+# inainte de citire, ca RSID, CHROMOSOME, POSITION si RESULT sa fie separate.
+read_ftdna_data_table = function(file_path) {
+  direct_df = tryCatch(
+    read.csv(
+      file_path,
+      header = TRUE,
+      stringsAsFactors = FALSE,
+      fill = TRUE,
+      check.names = FALSE,
+      quote = "\"",
+      comment.char = ""
+    ),
+    error = function(e) NULL
+  )
+  
+  if (!is.null(direct_df) && ncol(direct_df) >= 4) {
+    first_col = as.character(direct_df[[1]])
+    first_col = first_col[!is.na(first_col) & nzchar(first_col)]
+    
+    if (length(first_col) > 0 && any(grepl("^rs[0-9]+$", tolower(trimws(first_col))))) {
+      return(direct_df)
+    }
+    
+    if (length(first_col) > 0 && any(grepl("^rs[0-9]+,", tolower(trimws(first_col))))) {
+      reparsed_df = tryCatch(
+        read.csv(
+          text = paste(c("rsid,chromosome,position,result", first_col), collapse = "\n"),
+          header = TRUE,
+          stringsAsFactors = FALSE,
+          fill = TRUE,
+          check.names = FALSE,
+          quote = "\"",
+          comment.char = ""
+        ),
+        error = function(e) NULL
+      )
+      
+      if (!is.null(reparsed_df) && ncol(reparsed_df) >= 4) {
+        return(reparsed_df)
+      }
+    }
+  }
+  
+  ftdna_lines = readLines(file_path, warn = FALSE, encoding = "UTF-8")
+  ftdna_lines = gsub("^\ufeff", "", ftdna_lines)
+  ftdna_lines = trimws(ftdna_lines)
+  ftdna_lines = ftdna_lines[nzchar(ftdna_lines)]
+  
+  normalize_ftdna_line = function(current_line) {
+    trimmed_line = trimws(current_line)
+    
+    if (grepl('^".*"$', trimmed_line)) {
+      trimmed_line = sub('^"', "", trimmed_line)
+      trimmed_line = sub('"$', "", trimmed_line)
+      trimmed_line = gsub('""', '"', trimmed_line, fixed = TRUE)
+    }
+    
+    trimmed_line
+  }
+  
+  if (length(ftdna_lines) < 2) {
+    return(data.frame())
+  }
+  
+  ftdna_lines = vapply(ftdna_lines[-1], normalize_ftdna_line, character(1))
+  ftdna_rows = strsplit(ftdna_lines, ",", fixed = TRUE)
+  ftdna_rows = ftdna_rows[lengths(ftdna_rows) >= 4]
+  
+  if (length(ftdna_rows) == 0) {
+    return(data.frame())
+  }
+  
+  clean_ftdna_field = function(value) {
+    value = trimws(as.character(value))
+    value = gsub('""', '"', value, fixed = TRUE)
+    gsub('^"|"$', "", value)
+  }
+  
+  data.frame(
+    rsid = clean_ftdna_field(vapply(ftdna_rows, function(x) x[1], character(1))),
+    chromosome = clean_ftdna_field(vapply(ftdna_rows, function(x) x[2], character(1))),
+    position = clean_ftdna_field(vapply(ftdna_rows, function(x) x[3], character(1))),
+    result = clean_ftdna_field(vapply(ftdna_rows, function(x) x[4], character(1))),
+    stringsAsFactors = FALSE
+  )
+}
+
 get_parallel_worker_count = function(task_count) {
   available = parallel::detectCores(logical = TRUE)
   if (is.na(available) || available < 1) {
     available = 1
   }
   max(1, min(gwas_max_workers, max(1, available - 1), task_count))
+}
+
+# Instrumentare usoara pentru testele de evaluare rulate manual din aplicatie.
+get_r_memory_metrics = function(reset_peak = FALSE) {
+  gc_stats = suppressWarnings(gc(reset = reset_peak))
+  max_used_col = match("max used", colnames(gc_stats))
+  
+  list(
+    used_mb = sum(as.numeric(gc_stats[, 2]), na.rm = TRUE),
+    peak_mb = if (!is.na(max_used_col) && max_used_col < ncol(gc_stats)) {
+      sum(as.numeric(gc_stats[, max_used_col + 1]), na.rm = TRUE)
+    } else {
+      NA_real_
+    }
+  )
+}
+
+start_evaluation_metrics = function(file_names) {
+  memory_start = get_r_memory_metrics(reset_peak = TRUE)
+  
+  list(
+    started_at = Sys.time(),
+    proc_time = proc.time(),
+    memory_start_mb = memory_start$used_mb,
+    file_names = as.character(file_names)
+  )
+}
+
+finish_evaluation_metrics = function(metrics, success) {
+  proc_delta = proc.time() - metrics$proc_time
+  elapsed_seconds = as.numeric(difftime(Sys.time(), metrics$started_at, units = "secs"))
+  cpu_seconds = unname(proc_delta["user.self"] + proc_delta["sys.self"])
+  cpu_percent = if (is.finite(elapsed_seconds) && elapsed_seconds > 0) {
+    100 * cpu_seconds / elapsed_seconds
+  } else {
+    NA_real_
+  }
+  memory_end = get_r_memory_metrics()
+  file_label = paste(short_file_label(metrics$file_names, 54), collapse = " | ")
+  
+
+  cat("[EVALUARE] Status analiza:", if (isTRUE(success)) "finalizata" else "eroare", "\n")
+  cat("[EVALUARE] Fisiere selectate:", length(metrics$file_names), "\n")
+  cat("[EVALUARE] Nume fisiere:", file_label, "\n")
+  cat(sprintf("[EVALUARE] Timp total: %.2f secunde\n", elapsed_seconds))
+  cat(sprintf("[EVALUARE] CPU R: %.2f secunde | CPU mediu R: %.1f%%\n", cpu_seconds, cpu_percent))
+  cat(sprintf(
+    "[EVALUARE] RAM R: start %.1f MB | dupa analiza %.1f MB | maxim in analiza %.1f MB\n",
+    metrics$memory_start_mb,
+    memory_end$used_mb,
+    memory_end$peak_mb
+  ))
 }
 
 # Securizare parole
@@ -225,16 +366,19 @@ detect_declared_sex_from_filename = function(file_name) {
 read_adn_data = function(file_path, original_file_name = NULL) {
   # Citim un bloc mai mare, deoarece fișierele VCF pot avea multe linii de metadate înainte de #CHROM.
   header_lines = readLines(file_path, n = 1000, warn = FALSE, encoding = "UTF-8")
+  normalized_header_lines = trimws(gsub("^\ufeff", "", header_lines))
+  normalized_header_lines = gsub('^"|"$', "", normalized_header_lines)
+  normalized_header_lines = gsub('""', '"', normalized_header_lines, fixed = TRUE)
   header_text = paste(header_lines, collapse = "\n")
   
   # Aplicația acceptă formate diferite, dar toate sunt convertite ulterior la aceleași coloane:
   # rsid, cromozom și genotip.
-  is_ftdna = any(grepl("^RSID,CHROMOSOME,POSITION,RESULT", header_lines, ignore.case = TRUE))
+  is_ftdna = any(grepl("^RSID,CHROMOSOME,POSITION,RESULT", normalized_header_lines, ignore.case = TRUE))
   vcf_header_index = grep("^#CHROM\\s+POS\\s+ID\\s+REF\\s+ALT", header_lines, ignore.case = TRUE)
   is_vcf = any(grepl("^##fileformat=VCF", header_lines, ignore.case = TRUE)) ||
     length(vcf_header_index) > 0
   is_23andme = grepl("23andMe", header_text, ignore.case = TRUE) ||
-    any(grepl("^#\\s*rsid\\tchromosome\\tposition\\tgenotype", header_lines, ignore.case = TRUE))
+    any(grepl("^#\\s*rsid\\s+chromosome\\s+position\\s+genotype\\s*$", header_lines, ignore.case = TRUE))
   is_ancestry = grepl("AncestryDNA", header_text, ignore.case = TRUE) ||
     any(grepl("^rsid\\tchromosome\\tposition\\tallele1\\tallele2$", header_lines, ignore.case = TRUE))
   first_data_line_index = which(nzchar(trimws(header_lines)) & !grepl("^#", trimws(header_lines)))[1]
@@ -292,23 +436,18 @@ read_adn_data = function(file_path, original_file_name = NULL) {
       
       vcf_df
     } else if (is_ftdna) {
-      read.table(
-        file_path,
-        header = TRUE,
-        sep = ",",
-        stringsAsFactors = FALSE,
-        fill = TRUE,
-        check.names = FALSE,
-        quote = "\"",
-        comment.char = ""
-      )
+      read_ftdna_data_table(file_path)
     } else if (is_23andme) {
-      header_index = grep("^#\\s*rsid\\tchromosome\\tposition\\tgenotype\\s*$", header_lines, ignore.case = TRUE)
+      header_index = grep("^#\\s*rsid\\s+chromosome\\s+position\\s+genotype\\s*$", header_lines, ignore.case = TRUE)
+      if (length(header_index) == 0) {
+        return(NULL)
+      }
       read.table(
         file_path,
-        header = TRUE,
-        sep = "\t",
-        skip = header_index[1] - 1,
+        header = FALSE,
+        sep = "",
+        skip = header_index[1],
+        col.names = c("rsid", "chromosome", "position", "genotype"),
         stringsAsFactors = FALSE,
         fill = TRUE,
         check.names = FALSE,
@@ -379,6 +518,28 @@ read_adn_data = function(file_path, original_file_name = NULL) {
       stringsAsFactors = FALSE
     )
   } else if (is_ftdna) {
+    if (!all(c("rsid", "chromosome", "result") %in% colnames(df)) && ncol(df) == 1) {
+      ftdna_rows = strsplit(as.character(df[[1]]), ",", fixed = TRUE)
+      ftdna_rows = ftdna_rows[lengths(ftdna_rows) >= 4]
+      
+      if (length(ftdna_rows) == 0) {
+        return(NULL)
+      }
+      
+      df = data.frame(
+        rsid = vapply(ftdna_rows, function(x) x[1], character(1)),
+        chromosome = vapply(ftdna_rows, function(x) x[2], character(1)),
+        position = vapply(ftdna_rows, function(x) x[3], character(1)),
+        result = vapply(ftdna_rows, function(x) x[4], character(1)),
+        stringsAsFactors = FALSE
+      )
+      df[] = lapply(df, function(x) gsub('^"|"$', "", x))
+    }
+    
+    if (!all(c("rsid", "chromosome", "result") %in% colnames(df))) {
+      return(NULL)
+    }
+    
     res = data.frame(
       rsid = trimws(as.character(df$rsid)),
       chrom = trimws(as.character(df$chromosome)),
@@ -467,14 +628,14 @@ read_adn_data = function(file_path, original_file_name = NULL) {
     } else if (x_marker_count > 0) {
       sex_status = "Feminin"
     } else {
-      sex_status = "Necunoscut (Lipsă markeri sexuali)"
+      sex_status = "Necunoscut (markeri sexuali lipsă sau ambigui)"
     }
   } else if (has_y_signal) {
     sex_status = "Masculin"
   } else if (has_x_signal && !has_y_noise) {
     sex_status = "Feminin"
   } else {
-    sex_status = "Necunoscut (Lipsă markeri sexuali)"
+    sex_status = "Necunoscut (markeri sexuali lipsă sau ambigui)"
   }
   
   return(list(
@@ -1278,7 +1439,7 @@ get_gwas_data_smart = function(rsids, progress_callback = NULL) {
     )
     local_found = unique(local_ref$rsid)
   } else {
-    notify_progress(2, 5, "GWAS local indisponibil; se folosește API-ul pentru demo")
+    notify_progress(2, 5, "GWAS local indisponibil; se folosește API-ul ca fallback")
   }
   
   # API-ul este fallback: primește doar rsid-uri negăsite în cache sau local.
@@ -1287,7 +1448,7 @@ get_gwas_data_smart = function(rsids, progress_callback = NULL) {
   api_message = if (has_local_gwas) {
     "Se interoghează API doar pentru rsid-urile lipsă"
   } else {
-    paste("Se interoghează API pentru demo, maximum", api_limit, "rsid-uri")
+    paste("Se interoghează API ca fallback, maximum", api_limit, "rsid-uri")
   }
   notify_progress(3, 5, api_message)
   
@@ -1930,8 +2091,8 @@ read_user_upload_history = function(username, role = "user") {
   on.exit(dbDisconnect(conn), add = TRUE)
   
   if (identical(role, "admin")) {
-      dbGetQuery(
-        conn,
+    dbGetQuery(
+      conn,
       "
         SELECT
           sample_id AS upload_id,
@@ -1971,8 +2132,8 @@ get_upload_file_for_user = function(username, upload_id, role = "user") {
   on.exit(dbDisconnect(conn), add = TRUE)
   
   if (identical(role, "admin")) {
-      dbGetQuery(
-        conn,
+    dbGetQuery(
+      conn,
       "
         SELECT
           sample_id AS upload_id,
@@ -2629,7 +2790,7 @@ ui = fluidPage(
     tags$div(
       class = "startup-splash-card",
       tags$img(src = "logo_aplicatie.png", class = "startup-splash-logo", alt = "Logo aplicație"),
-      tags$div(class = "startup-splash-text", "Analiza profilului genetic")
+      #tags$div(class = "startup-splash-text", "Analiza profilului genetic")
     )
   ),
   titlePanel("🧬 Analiza profilului genetic"),
@@ -2759,7 +2920,7 @@ ui = fluidPage(
               )
             ),
             br(),
-      
+            
           )
         )
       )
@@ -3080,6 +3241,8 @@ server = function(input, output, session) {
     shinyjs::show("loading-content")
     status_text("⏳ Procesare în curs. Aplicația citește fișierele ADN și pregătește interogarea GWAS.")
     
+    evaluation_metrics = start_evaluation_metrics(input$adn_files$name)
+    
     result = tryCatch({
       adn_list = list()
       stats = data.frame(
@@ -3306,6 +3469,7 @@ server = function(input, output, session) {
     })
     
     shinyjs::hide("loading-content")
+    finish_evaluation_metrics(evaluation_metrics, result)
     invisible(result)
   })
   

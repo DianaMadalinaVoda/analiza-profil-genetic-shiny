@@ -2,7 +2,7 @@
 
 Aplicație R Shiny pentru încărcarea, procesarea și interpretarea fișierelor ADN personale. Aplicația extrage variante genetice de tip `rsID`, le compară cu GWAS Catalog și afișează statistici, interpretări genetice, profil individual, istoric de încărcări și comparații între fișiere.
 
-Proiectul a fost realizat pentru disertație și include atât o variantă completă pentru rulare locală, cât și o variantă demo pentru publicare pe `shinyapps.io`.
+Proiectul a fost realizat pentru disertație și este gândit pentru rulare locală, cu fișierul GWAS Catalog descărcat lângă `app.R` și cu salvarea analizelor într-o bază de date SQLite.
 
 ## Funcționalități
 
@@ -38,19 +38,19 @@ Exemplu: dacă GWAS raportează `rs4877963-T`, dar genotipul utilizatorului este
 
 ## Flux GWAS
 
-Aplicația folosește două moduri de lucru:
+Aplicația folosește un flux local cu mecanism de cache și completare prin API:
 
 ```text
-Local:
 cache SQLite -> GWAS Catalog local TSV -> API gwasrapidd pentru lipsuri -> filtrare după alela de risc
-
-shinyapps.io demo:
-cache SQLite -> API gwasrapidd limitat -> filtrare după alela de risc
 ```
 
-În rularea locală, fișierul `gwas_catalog_associations.tsv` permite căutarea rapidă în GWAS Catalog. În demo-ul online, acest fișier este exclus deoarece este foarte mare, iar aplicația folosește API-ul pentru un număr limitat de rsID-uri.
+În rularea locală, fișierul `gwas_catalog_associations.tsv` permite căutarea rapidă în GWAS Catalog. Dacă anumite rsID-uri nu sunt găsite local sau în cache, aplicația poate interoga suplimentar API-ul prin `gwasrapidd`, cu limită pentru rsID-uri noi astfel încât analiza să nu blocheze aplicația.
 
-În varianta publicată pe `shinyapps.io`, interogarea API este limitată la maximum `20` de rsID-uri noi per analiză, pentru a evita blocarea aplicației și depășirea resurselor disponibile. Pentru analiza completă se recomandă rularea locală, cu fișierul GWAS Catalog TSV descărcat lângă `app.R`.
+Pentru analiză completă și rapidă se recomandă rularea locală, cu fișierul GWAS Catalog TSV descărcat lângă `app.R`.
+
+## Observație pentru fișiere VCF
+
+În cazul fișierelor VCF, aplicația păstrează doar variantele care au identificator `rsID` valid, deoarece integrarea cu GWAS Catalog se realizează pe baza acestui identificator. Unele fișiere VCF de tip exome conțin poziții genomice fără identificatori `rsID` în coloana `ID`, de exemplu `.`. Aceste poziții sunt valide structural în VCF, dar sunt ignorate în etapa de analiză GWAS deoarece nu pot fi corelate direct cu GWAS Catalog.
 
 ## Fișiere pentru demo
 
@@ -126,23 +126,6 @@ shiny::runApp()
 ```
 
 La prima rulare, baza SQLite `genetic_app.sqlite` este creată automat în folderul aplicației.
-
-## Publicare pe shinyapps.io
-
-Pentru demo public, aplicația poate fi publicată pe `shinyapps.io`.
-
-Fișierul `gwas_catalog_associations.tsv` este exclus din deploy prin `.rscignore`, deoarece este foarte mare și poate depăși resursele disponibile pe planul gratuit.
-
-Comandă exemplu:
-
-```r
-rsconnect::deployApp(
-  appDir = "D:/analiza-profil-genetic-shiny",
-  appName = "analiza-profil-genetic-shiny"
-)
-```
-
-Linkul generat de `shinyapps.io` poate fi transformat în cod QR pentru prezentarea disertației.
 
 ## Roluri utilizatori
 
