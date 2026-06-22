@@ -628,14 +628,14 @@ read_adn_data = function(file_path, original_file_name = NULL) {
     } else if (x_marker_count > 0) {
       sex_status = "Feminin"
     } else {
-      sex_status = "Necunoscut (markeri sexuali lipsă sau ambigui)"
+      sex_status = "Necunoscut (lipsă markeri sexuali)"
     }
   } else if (has_y_signal) {
     sex_status = "Masculin"
   } else if (has_x_signal && !has_y_noise) {
     sex_status = "Feminin"
   } else {
-    sex_status = "Necunoscut (markeri sexuali lipsă sau ambigui)"
+    sex_status = "Necunoscut (lipsă markeri sexuali)"
   }
   
   return(list(
