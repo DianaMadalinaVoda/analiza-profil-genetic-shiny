@@ -628,14 +628,14 @@ read_adn_data = function(file_path, original_file_name = NULL) {
     } else if (x_marker_count > 0) {
       sex_status = "Feminin"
     } else {
-      sex_status = "Necunoscut (lipsă markeri sexuali)"
+      sex_status = "Necunoscut (Lipsă markeri sexuali sau ambigui)"
     }
   } else if (has_y_signal) {
     sex_status = "Masculin"
   } else if (has_x_signal && !has_y_noise) {
     sex_status = "Feminin"
   } else {
-    sex_status = "Necunoscut (lipsă markeri sexuali)"
+    sex_status = "Necunoscut (Lipsă markeri sexuali sau ambigui)"
   }
   
   return(list(
@@ -3267,7 +3267,7 @@ server = function(input, output, session) {
           adn_list[[fname]] = sample_data
           original_contents[[fname]] = read_text_file_content(input$adn_files$datapath[i])
           
-          sex_val = if (is.null(res$sex) || length(res$sex) == 0) "Necunoscut (markeri sexuali lipsă sau ambigui)" else res$sex
+          sex_val = if (is.null(res$sex) || length(res$sex) == 0) "Necunoscut (Lipsă markeri sexuali sau ambigui)" else res$sex
           
           stats = rbind(
             stats,
@@ -3388,7 +3388,7 @@ server = function(input, output, session) {
         value = 0,
         session = session,
         {
-          incProgress(0.2, detail = "Normalizez câmpul STRONGEST SNP-RISK ALLELE", session = session)
+          incProgress(0.2, detail = "Normalizarea câmpului STRONGEST SNP-RISK ALLELE", session = session)
           prepared_ref = prepare_gwas_ref_for_join(ref)
           incProgress(0.8, detail = "Alelele de risc au fost pregătite", session = session)
           prepared_ref
@@ -3505,8 +3505,9 @@ server = function(input, output, session) {
       scale_fill_manual(values = c(
         "Masculin" = "#B3CDE3",
         "Feminin" = "#FBB4AE",
-        "Necunoscut (Lipsă markeri sexuali)" = "#FFFFCC",
-        "Necunoscut (markeri sexuali lipsă sau ambigui)" = "#FFFFCC"
+       # "Necunoscut (Lipsă markeri sexuali )" = "#FFFFCC",
+        "Necunoscut (Lipsă markeri sexuali sau ambigui)" = "#FFFFCC" 
+        
       )) +
       theme_minimal() +
       theme(
