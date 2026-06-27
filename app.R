@@ -1577,6 +1577,15 @@ initialize_database = function() {
   
   ensure_column_exists(conn, "users", "role", "TEXT NOT NULL DEFAULT 'user'")
   
+  
+  ensure_column_exists(
+    conn,
+    "users",
+    "must_change_password",
+    "INTEGER NOT NULL DEFAULT 0"
+  )
+  
+  
   # Tabela samples păstrează fiecare fișier încărcat și conținutul original.
   dbExecute(conn, "
     CREATE TABLE IF NOT EXISTS samples (
@@ -1678,8 +1687,15 @@ initialize_database = function() {
   if (nrow(existing_user) == 0) {
     dbExecute(
       conn,
-      "INSERT INTO users (username, password, role, created_at) VALUES (?, ?, ?, ?)",
-      params = list(default_app_username, hash_password(default_app_password), "admin", as.character(Sys.time()))
+      "INSERT INTO users (username, password, role, created_at, must_change_password)
+   VALUES (?, ?, ?, ?, ?)",
+      params = list(
+        default_app_username,
+        hash_password(default_app_password),
+        "admin",
+        as.character(Sys.time()),
+        1
+      )
     )
   } else {
     dbExecute(
@@ -1687,12 +1703,13 @@ initialize_database = function() {
       "UPDATE users SET role = 'admin' WHERE username = ?",
       params = list(default_app_username)
     )
-    
     existing_admin = dbGetQuery(
       conn,
       "SELECT password FROM users WHERE username = ?",
       params = list(default_app_username)
     )
+    
+    
     
     if (nrow(existing_admin) == 1 && !password_is_hashed(existing_admin$password[1])) {
       dbExecute(
@@ -1711,16 +1728,18 @@ get_user_account = function(username, password) {
   
   user_row = dbGetQuery(
     conn,
-    "SELECT username, role, password FROM users WHERE username = ?",
+    "SELECT username, role, password, must_change_password
+   FROM users
+   WHERE username = ?",
     params = list(username)
   )
   
   if (nrow(user_row) != 1) {
-    return(user_row[0, c("username", "role"), drop = FALSE])
+    return(user_row[0, c("username", "role", "must_change_password"), drop = FALSE])
   }
   
   if (!verify_password(user_row$password[1], password)) {
-    return(user_row[0, c("username", "role"), drop = FALSE])
+    return(user_row[0, c("username", "role", "must_change_password"), drop = FALSE])
   }
   
   if (!password_is_hashed(user_row$password[1])) {
@@ -1731,7 +1750,7 @@ get_user_account = function(username, password) {
     )
   }
   
-  user_row[, c("username", "role"), drop = FALSE]
+  user_row[, c("username", "role", "must_change_password"), drop = FALSE]
 }
 
 # Creează un cont nou pentru utilizator.
@@ -1763,6 +1782,29 @@ create_user_account = function(username, password) {
     conn,
     "INSERT INTO users (username, password, role, created_at) VALUES (?, ?, ?, ?)",
     params = list(username, hash_password(password), "user", as.character(Sys.time()))
+  )
+  
+  TRUE
+}
+
+#Funcția pentru schimbarea parolei
+change_user_password = function(username, new_password) {
+  
+  conn = get_db_connection()
+  on.exit(dbDisconnect(conn), add = TRUE)
+  
+  dbExecute(
+    conn,
+    "
+    UPDATE users
+    SET password = ?,
+        must_change_password = 0
+    WHERE username = ?
+    ",
+    params = list(
+      hash_password(new_password),
+      username
+    )
   )
   
   TRUE
@@ -2946,6 +2988,7 @@ server = function(input, output, session) {
   logged_in <- reactiveVal(FALSE)
   current_user <- reactiveVal(NULL)
   current_role <- reactiveVal("user")
+  must_change_password <- reactiveVal(FALSE)
   history_refresh <- reactiveVal(0)
   admin_request_refresh <- reactiveVal(0)
   login_status <- reactiveVal("")
@@ -3082,6 +3125,8 @@ server = function(input, output, session) {
       current_user(trimws(input$login_username))
       current_role(user_row$role[1])
       logged_in(TRUE)
+      must_change_password(user_row$must_change_password[1] == 1)
+      
       login_status("")
       
       admin_notice = tryCatch(
@@ -3107,6 +3152,7 @@ server = function(input, output, session) {
       login_status("Utilizator sau parolă invalidă.")
       current_role("user")
       logged_in(FALSE)
+      must_change_password(FALSE)
     }
   })
   
@@ -3127,6 +3173,50 @@ server = function(input, output, session) {
   
   output$login_status = renderText({
     login_status()
+  })
+  
+  observe({
+    
+    req(logged_in())
+    
+    if (must_change_password()) {
+      
+      showModal(
+        modalDialog(
+          title = "Schimbare parolă",
+          passwordInput("new_pass", "Parolă nouă"),
+          passwordInput("new_pass2", "Confirmă parola"),
+          footer = actionButton("save_new_pass", "Salvează"),
+          easyClose = FALSE
+        )
+      )
+      
+    }
+    
+  })
+  
+  observeEvent(input$save_new_pass, {
+    
+    req(current_user())
+    
+    if (input$new_pass == "" || input$new_pass2 == "") {
+      showNotification("Completează toate câmpurile!", type = "error")
+      return()
+    }
+    
+    if (input$new_pass != input$new_pass2) {
+      showNotification("Parolele nu coincid!", type = "error")
+      return()
+    }
+    
+    change_user_password(current_user(), input$new_pass)
+    
+    must_change_password(FALSE)
+    
+    removeModal()
+    
+    showNotification("Parola a fost schimbată cu succes!")
+    
   })
   
   observeEvent(input$register_btn, {
