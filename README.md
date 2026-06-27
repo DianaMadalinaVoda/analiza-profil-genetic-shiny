@@ -127,6 +127,13 @@ shiny::runApp()
 
 La prima rulare, baza SQLite `genetic_app.sqlite` este creată automat în folderul aplicației.
 
+Contul implicit de administrator este:
+
+- **Utilizator:** `admin`
+- **Parolă inițială:** `genetica123`
+
+La prima autentificare, administratorul este obligat să își schimbe parola din motive de securitate.
+
 ## Roluri utilizatori
 
 Aplicația are două tipuri de admin:
