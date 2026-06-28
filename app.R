@@ -290,6 +290,20 @@ verify_password = function(stored_password, password_value) {
   identical(stored_password, password_value)
 }
 
+
+# Generează o parolă temporară
+
+generate_temporary_password = function(length = 10) {
+  
+  chars = c(
+    LETTERS,
+    letters,
+    0:9
+  )
+  
+  paste0(sample(chars, length, replace = TRUE), collapse = "")
+}
+
 # Convertește genotipul din format VCF (0/1, 1/1 etc.) în baze reale.
 convert_vcf_gt_to_genotype = function(gt, ref, alt) {
   gt = as.character(gt)
@@ -1669,11 +1683,13 @@ initialize_database = function() {
   ")
   
   ensure_column_exists(conn, "admin_requests", "seen_by_user", "INTEGER NOT NULL DEFAULT 0")
+  ensure_column_exists(conn, "admin_requests", "request_type", "TEXT NOT NULL DEFAULT 'admin_role'")
   
   dbExecute(conn, "CREATE INDEX IF NOT EXISTS idx_variants_sample_id ON variants(sample_id)")
   dbExecute(conn, "CREATE INDEX IF NOT EXISTS idx_annotations_sample_id ON annotations(sample_id)")
   dbExecute(conn, "CREATE INDEX IF NOT EXISTS idx_gwas_annotations_cache_rsid ON gwas_annotations_cache(rsid)")
   dbExecute(conn, "CREATE INDEX IF NOT EXISTS idx_admin_requests_status ON admin_requests(status)")
+  dbExecute(conn, "CREATE INDEX IF NOT EXISTS idx_admin_requests_type_status ON admin_requests(request_type, status)")
   
   migrate_legacy_tables(conn)
   
@@ -1788,7 +1804,14 @@ create_user_account = function(username, password) {
 }
 
 #Funcția pentru schimbarea parolei
-change_user_password = function(username, new_password) {
+change_user_password = function(
+    username,
+    new_password,
+    must_change = FALSE
+) {
+  if (nchar(new_password) < 6) {
+    stop("Parola trebuie să aibă cel puțin 6 caractere.")
+  }
   
   conn = get_db_connection()
   on.exit(dbDisconnect(conn), add = TRUE)
@@ -1798,16 +1821,30 @@ change_user_password = function(username, new_password) {
     "
     UPDATE users
     SET password = ?,
-        must_change_password = 0
+        must_change_password = ?
     WHERE username = ?
     ",
     params = list(
       hash_password(new_password),
+      ifelse(must_change, 1, 0),
       username
     )
   )
   
   TRUE
+}
+
+reset_user_password = function(username) {
+  
+  temp_password = generate_temporary_password()
+  
+  change_user_password(
+    username = username,
+    new_password = temp_password,
+    must_change = TRUE
+  )
+  
+  temp_password
 }
 
 # Trimite o cerere de promovare la rolul de admin.
@@ -1831,7 +1868,7 @@ request_admin_role = function(username) {
   
   existing_request = dbGetQuery(
     conn,
-    "SELECT request_id FROM admin_requests WHERE username = ? AND status = 'pending'",
+    "SELECT request_id FROM admin_requests WHERE username = ? AND status = 'pending' AND request_type = 'admin_role'",
     params = list(username)
   )
   
@@ -1841,14 +1878,156 @@ request_admin_role = function(username) {
   
   dbExecute(
     conn,
-    "INSERT INTO admin_requests (username, status, requested_at) VALUES (?, 'pending', ?)",
+    "INSERT INTO admin_requests (username, status, requested_at, request_type) VALUES (?, 'pending', ?, 'admin_role')",
+    params = list(username, as.character(Sys.time()))
+  )
+ 
+  
+  TRUE
+}
+
+# Citește cererile de admin care așteaptă aprobare.
+request_password_reset = function(username) {
+  conn = get_db_connection()
+  on.exit(dbDisconnect(conn), add = TRUE)
+  
+  username = trimws(username)
+  
+  if (!nzchar(username)) {
+    stop("Completează utilizatorul pentru care vrei resetarea parolei.")
+  }
+  
+  user_row = dbGetQuery(
+    conn,
+    "SELECT username FROM users WHERE username = ?",
+    params = list(username)
+  )
+  
+  if (nrow(user_row) != 1) {
+    stop("Nu există niciun cont cu acest utilizator.")
+  }
+  
+  existing_request = dbGetQuery(
+    conn,
+    "SELECT request_id FROM admin_requests WHERE username = ? AND status = 'pending' AND request_type = 'password_reset'",
+    params = list(username)
+  )
+  
+  if (nrow(existing_request) > 0) {
+    stop("Există deja o cerere de resetare parolă în așteptare.")
+  }
+  
+  dbExecute(
+    conn,
+    "INSERT INTO admin_requests (username, status, requested_at, request_type) VALUES (?, 'pending', ?, 'password_reset')",
     params = list(username, as.character(Sys.time()))
   )
   
   TRUE
 }
 
-# Citește cererile de admin care așteaptă aprobare.
+# Aprobă cererea de resetare parolă 
+approve_password_reset_request = function(request_id, admin_username) {
+  conn = get_db_connection()
+  on.exit(dbDisconnect(conn), add = TRUE)
+  
+  dbBegin(conn)
+  tryCatch({
+    request_row = dbGetQuery(
+      conn,
+      "SELECT request_id, username, status, request_type FROM admin_requests WHERE request_id = ?",
+      params = list(request_id)
+    )
+    
+    if (nrow(request_row) != 1 || !identical(request_row$status[1], "pending")) {
+      stop("Cererea selectată nu mai este disponibilă.")
+    }
+    
+    if (!identical(request_row$request_type[1], "password_reset")) {
+      stop("Cererea selectată nu este o cerere de resetare parolă.")
+    }
+    
+    temp_password = generate_temporary_password()
+    
+    dbExecute(
+      conn,
+      "
+        UPDATE users
+        SET password = ?,
+            must_change_password = 1
+        WHERE username = ?
+      ",
+      params = list(hash_password(temp_password), request_row$username[1])
+    )
+    
+    dbExecute(
+      conn,
+      "
+        UPDATE admin_requests
+        SET status = 'approved', resolved_at = ?, resolved_by = ?, seen_by_user = 1
+        WHERE request_id = ?
+      ",
+      params = list(as.character(Sys.time()), admin_username, request_id)
+    )
+    
+    dbCommit(conn)
+    list(
+      success = TRUE,
+      username = request_row$username[1],
+      temporary_password = temp_password
+    )
+  }, error = function(e) {
+    dbRollback(conn)
+    list(
+      success = FALSE,
+      message = paste("Eroare:", conditionMessage(e))
+    )
+  })
+}
+
+# Respinge cererea de resetare parolă 
+reject_password_reset_request = function(request_id, admin_username) {
+  conn = get_db_connection()
+  on.exit(dbDisconnect(conn), add = TRUE)
+  
+  dbBegin(conn)
+  tryCatch({
+    request_row = dbGetQuery(
+      conn,
+      "SELECT request_id, username, status, request_type FROM admin_requests WHERE request_id = ?",
+      params = list(request_id)
+    )
+    
+    if (nrow(request_row) != 1 || !identical(request_row$status[1], "pending")) {
+      stop("Cererea selectată nu mai este disponibilă.")
+    }
+    
+    if (!identical(request_row$request_type[1], "password_reset")) {
+      stop("Cererea selectată nu este o cerere de resetare parolă.")
+    }
+    
+    dbExecute(
+      conn,
+      "
+        UPDATE admin_requests
+        SET status = 'rejected', resolved_at = ?, resolved_by = ?, seen_by_user = 1
+        WHERE request_id = ?
+      ",
+      params = list(as.character(Sys.time()), admin_username, request_id)
+    )
+    
+    dbCommit(conn)
+    list(success = TRUE)
+  }, error = function(e) {
+    dbRollback(conn)
+    list(
+      success = FALSE,
+      message = paste("Eroare:", conditionMessage(e))
+    )
+  })
+}
+
+
 read_pending_admin_requests = function() {
   conn = get_db_connection()
   on.exit(dbDisconnect(conn), add = TRUE)
@@ -1863,12 +2042,33 @@ read_pending_admin_requests = function() {
         requested_at
       FROM admin_requests
       WHERE status = 'pending'
+        AND request_type = 'admin_role'
       ORDER BY datetime(requested_at) ASC
     "
   )
 }
 
 # Verifică dacă userul curent are deja o cerere de admin în așteptare.
+read_pending_password_reset_requests = function() {
+  conn = get_db_connection()
+  on.exit(dbDisconnect(conn), add = TRUE)
+  
+  dbGetQuery(
+    conn,
+    "
+      SELECT
+        request_id,
+        username,
+        status,
+        requested_at
+      FROM admin_requests
+      WHERE status = 'pending'
+        AND request_type = 'password_reset'
+      ORDER BY datetime(requested_at) ASC
+    "
+  )
+}
+
 get_admin_request_status = function(username) {
   conn = get_db_connection()
   on.exit(dbDisconnect(conn), add = TRUE)
@@ -1879,6 +2079,7 @@ get_admin_request_status = function(username) {
       SELECT status
       FROM admin_requests
       WHERE username = ?
+        AND request_type = 'admin_role'
       ORDER BY datetime(requested_at) DESC
       LIMIT 1
     ",
@@ -1903,6 +2104,7 @@ get_unseen_admin_notice = function(username) {
       SELECT request_id, status
       FROM admin_requests
       WHERE username = ?
+        AND request_type = 'admin_role'
         AND status IN ('approved', 'rejected', 'revoked')
         AND COALESCE(seen_by_user, 0) = 0
       ORDER BY datetime(COALESCE(resolved_at, requested_at)) DESC
@@ -1942,12 +2144,16 @@ resolve_admin_request = function(request_id, admin_username, decision = c("appro
   tryCatch({
     request_row = dbGetQuery(
       conn,
-      "SELECT request_id, username, status FROM admin_requests WHERE request_id = ?",
+      "SELECT request_id, username, status, request_type FROM admin_requests WHERE request_id = ?",
       params = list(request_id)
     )
     
     if (nrow(request_row) != 1 || !identical(request_row$status[1], "pending")) {
       stop("Cererea selectată nu mai este disponibilă.")
+    }
+    
+    if (!identical(request_row$request_type[1], "admin_role")) {
+      stop("Cererea selectată nu este o cerere pentru rol admin.")
     }
     
     if (identical(decision, "approved")) {
@@ -1977,6 +2183,62 @@ resolve_admin_request = function(request_id, admin_username, decision = c("appro
 }
 
 # Citește adminii promovați care pot fi revocați de adminul principal.
+resolve_password_reset_request = function(request_id, admin_username, decision = c("approved", "rejected")) {
+  decision = match.arg(decision)
+  conn = get_db_connection()
+  on.exit(dbDisconnect(conn), add = TRUE)
+  
+  dbBegin(conn)
+  tryCatch({
+    request_row = dbGetQuery(
+      conn,
+      "SELECT request_id, username, status, request_type FROM admin_requests WHERE request_id = ?",
+      params = list(request_id)
+    )
+    
+    if (nrow(request_row) != 1 || !identical(request_row$status[1], "pending")) {
+      stop("Cererea selectată nu mai este disponibilă.")
+    }
+    
+    if (!identical(request_row$request_type[1], "password_reset")) {
+      stop("Cererea selectată nu este o cerere de resetare parolă.")
+    }
+    
+    temp_password = NA_character_
+    
+    if (identical(decision, "approved")) {
+      temp_password = generate_temporary_password()
+      
+      dbExecute(
+        conn,
+        "
+          UPDATE users
+          SET password = ?,
+              must_change_password = 1
+          WHERE username = ?
+        ",
+        params = list(hash_password(temp_password), request_row$username[1])
+      )
+    }
+    
+    dbExecute(
+      conn,
+      "
+        UPDATE admin_requests
+        SET status = ?, resolved_at = ?, resolved_by = ?, seen_by_user = 1
+        WHERE request_id = ?
+      ",
+      params = list(decision, as.character(Sys.time()), admin_username, request_id)
+    )
+    
+    dbCommit(conn)
+    list(username = request_row$username[1], temporary_password = temp_password)
+  }, error = function(e) {
+    dbRollback(conn)
+    stop(e)
+  })
+}
+
 read_promoted_admins = function() {
   conn = get_db_connection()
   on.exit(dbDisconnect(conn), add = TRUE)
@@ -2575,43 +2837,50 @@ ui = fluidPage(
         width: 96%;
         max-width: 1920px;
       }
-      #login_panel {
-        max-width: 420px;
-        margin: 40px auto;
-        padding: 24px;
-        background: #ffffff;
-        border: 1px solid #d9e2ec;
-        border-radius: 12px;
+    
+    #login_panel {
+      max-width: 420px;
+      margin: 40px auto;
+      padding: 24px;
+      background: #ffffff;
+      border: 1px solid #d9e2ec;
+      border-radius: 12px;
+      overflow: hidden;
       }
-      .form-control,
-      .selectize-input,
-      .btn,
-      .nav-tabs > li > a,
-      .dataTables_wrapper,
-      .sidebar,
-      table,
-      .dataTable,
-      input,
-      label {
-        font-size: 13px !important;
+    #login_panel .shiny-input-container,
+    #login_panel .btn,
+    #login_panel .form-control {
+      width: 100% !important;
+      max-width: 100% !important;
+      box-sizing: border-box !important;
       }
-      .btn-lg {
-        min-height: 38px !important;
-        font-size: 14px !important;
+    #login_btn {
+      margin-top: 8px;
+      height: 42px !important;
       }
-      .shiny-input-container,
-      input[type='file'] {
-        max-width: 100%;
+    #forgot_password_btn {
+      width: 100% !important;
+      height: 42px !important;
+      margin-top: 8px;
+      padding: 0 12px;
+      color: #2c3e50;
+      background: #f4f8fb;
+      border: 1px solid #d9e2ec;
+      border-radius: 6px;
+      font-weight: 600;
+      font-size: 14px !important;
+      box-sizing: border-box !important;
+      display: flex !important;
+      align-items: center;
+      justify-content: center;
+      text-decoration: none;
       }
-      .btn-file {
-        width: 100%;
-        text-align: left;
-      }
-      .tab-content {
-        padding-top: 8px;
-      }
-      #login_btn {
-        margin-top: -6px;
+    #forgot_password_btn:hover,
+    #forgot_password_btn:focus {
+      color: #1f6f8b;
+      background: #eaf3f8;
+      border-color: #b8d1e3;
+      text-decoration: none;
       }
       .login-message {
         min-height: 18px;
@@ -2835,6 +3104,19 @@ ui = fluidPage(
       #tags$div(class = "startup-splash-text", "Analiza profilului genetic")
     )
   ),
+  
+  tags$script(HTML("
+  $(document).on('input', '#register_password', function() {
+    if ($(this).val().length > 0 && $(this).val().length < 6) {
+      $('#password_hint').hide();
+      $('#password_length_warning').show();
+    } else {
+      $('#password_hint').show();
+      $('#password_length_warning').hide();
+    }
+  });
+")),
+
   titlePanel("🧬 Analiza profilului genetic"),
   tags$div(
     id = "login_panel",
@@ -2842,12 +3124,30 @@ ui = fluidPage(
     textInput("login_username", "Utilizator", value = ""),
     passwordInput("login_password", "Parolă"),
     actionButton("login_btn", "Intră în aplicație", class = "btn-primary", width = "100%"),
+    br(),
+    actionButton(
+      "forgot_password_btn",
+      "🔑 Am uitat parola",
+      class = "btn-default",
+      width = "100%"
+    ),
     tags$div(class = "login-message", textOutput("login_status")),
     hr(),
     h4("👤 Creează cont"),
     textInput("register_username", "Utilizator nou"),
     passwordInput("register_password", "Parolă nouă"),
     passwordInput("register_password_confirm", "Confirmă parola"),
+  
+    tags$div(
+      id = "password_hint",
+      style = "color: #6c757d; font-size: 13px; margin-top: 4px;",
+      "Parola trebuie să aibă cel puțin 6 caractere."
+    ),
+    tags$div(
+      id = "password_length_warning",
+      style = "color: #dc3545; font-size: 13px; margin-top: 4px; display: none;",
+      "⚠️ Parola trebuie să aibă cel puțin 6 caractere."
+    ),
     actionButton("register_btn", "Creează cont", width = "100%"),
     tags$div(class = "login-message", textOutput("register_status"))
   ),
@@ -2879,6 +3179,11 @@ ui = fluidPage(
         actionButton("logout_btn", "🔓 Logout", width = "100%"),
         br(),
         br(),
+        
+        actionButton("change_password_btn", "🔑 Schimbă parola", width = "100%"),
+        br(),
+        br(),
+        
         uiOutput("admin_request_action_ui")
       ),
       mainPanel(
@@ -2944,7 +3249,9 @@ ui = fluidPage(
             br(),
             DTOutput("history_table"),
             uiOutput("admin_requests_panel"),
+            uiOutput("password_reset_requests_panel"),
             uiOutput("revoke_admin_panel"),
+          
             br(),
             fluidRow(
               column(8, uiOutput("history_file_ui")),
@@ -3068,7 +3375,7 @@ server = function(input, output, session) {
     )
   }
   
-  # Rezultatele NU se mai șterg automat când intri în Istoric sau când alegi alte fișiere.
+  # Rezultatele NU se mai șterg automat când intrăm în Istoric sau când alegem alte fișiere.
   # Ștergerea rezultatelor afișate se face manual, din butonul de reset din tabul Istoric.
   observeEvent(input$reset_session_results, {
     app_data(NULL)
@@ -3170,55 +3477,193 @@ server = function(input, output, session) {
     login_status("")
     status_text("Încarcă fișierele ADN, apoi apasă ANALIZEAZĂ.")
   })
+  observeEvent(input$forgot_password_btn, {
+    
+    showModal(
+      modalDialog(
+        title = "Resetare parolă",
+        
+        textInput("forgot_username", "Nume utilizator"),
+        
+        footer = tagList(
+          modalButton("Anulează"),
+          actionButton("send_password_reset_request", "Trimite cererea")
+        ),
+        
+        easyClose = TRUE
+      )
+    )
+    
+    updateTextInput(session, "forgot_username", value = "")
+  })
+  
+  observeEvent(input$send_password_reset_request, {
+    
+    req(input$forgot_username)
+    
+    isolate({
+      username <- trimws(input$forgot_username)
+    })
+    
+    tryCatch({
+      
+      request_password_reset(username)
+      
+      removeModal()
+      
+      showNotification(
+        "Cererea de resetare a parolei a fost trimisă administratorului.",
+        type = "message",
+        duration = 5
+      )
+      
+    }, error = function(e) {
+      
+      showNotification(e$message, type = "error")
+      
+    })
+  })
   
   output$login_status = renderText({
     login_status()
   })
+  
+  show_change_password_modal = function(force_change = FALSE) {
+    showModal(
+      modalDialog(
+        title = "Schimbare parolă",
+        passwordInput("current_pass", "Parola actuală"),
+        passwordInput("new_pass", "Parolă nouă"),
+        passwordInput("new_pass2", "Confirmă parola"),
+        footer = tagList(
+          if (!force_change) {
+            modalButton("Anulează")
+          },
+          actionButton("save_new_pass", "Salvează", class = "btn-primary")
+        ),
+        easyClose = !force_change
+      )
+    )
+  }
   
   observe({
     
     req(logged_in())
     
     if (must_change_password()) {
-      
-      showModal(
-        modalDialog(
-          title = "Schimbare parolă",
-          passwordInput("new_pass", "Parolă nouă"),
-          passwordInput("new_pass2", "Confirmă parola"),
-          footer = actionButton("save_new_pass", "Salvează"),
-          easyClose = FALSE
-        )
-      )
+      show_change_password_modal(force_change = TRUE)
       
     }
     
   })
   
+  observeEvent(input$change_password_btn, {
+    req(logged_in(), current_user())
+    show_change_password_modal(force_change = FALSE)
+  })
+  
   observeEvent(input$save_new_pass, {
+    req(logged_in(), current_user())
     
-    req(current_user())
+    if (is.null(input$current_pass) || !nzchar(input$current_pass)) {
+      showNotification(
+        "Introdu parola actuală.",
+        type = "error"
+      )
+      
+      return()
+    }
     
-    if (input$new_pass == "" || input$new_pass2 == "") {
-      showNotification("Completează toate câmpurile!", type = "error")
+    if (is.null(input$new_pass) || nchar(input$new_pass) < 6) {
+      showNotification(
+        "Parola nouă trebuie să aibă cel puțin 6 caractere.",
+        type = "error"
+      )
+      
       return()
     }
     
     if (input$new_pass != input$new_pass2) {
-      showNotification("Parolele nu coincid!", type = "error")
+      
+      showNotification(
+        "Parolele nu coincid.",
+        type = "error"
+      )
+      
       return()
+      
     }
     
-    change_user_password(current_user(), input$new_pass)
+    conn = get_db_connection()
+    on.exit(dbDisconnect(conn), add = TRUE)
+    
+    user_row = dbGetQuery(
+      conn,
+      "SELECT password FROM users WHERE username = ?",
+      params = list(current_user())
+    )
+    
+    if (!verify_password(
+      user_row$password[1],
+      input$current_pass
+    )) {
+      
+      showNotification(
+        "Parola actuală este incorectă.",
+        type = "error"
+      )
+      
+      return()
+      
+    }
+    
+    change_user_password(
+      current_user(),
+      input$new_pass,
+      must_change = FALSE
+    )
     
     must_change_password(FALSE)
     
     removeModal()
     
-    showNotification("Parola a fost schimbată cu succes!")
+    showNotification(
+      "Parola a fost schimbată cu succes.",
+      type = "message"
+    )
     
   })
   
+  observeEvent(input$approve_password_reset, {
+    req(logged_in(), current_user(), input$selected_password_reset_request)
+    req(is_primary_admin(current_user()))
+    
+    result = tryCatch({
+      resolve_password_reset_request(
+        as.integer(input$selected_password_reset_request),
+        current_user(),
+        "approved"
+      )
+    }, error = function(e) {
+      list(success = FALSE, message = conditionMessage(e))
+    })
+    
+    if (!is.null(result$temporary_password) && !is.na(result$temporary_password)) {
+      admin_request_refresh(admin_request_refresh() + 1)
+      showModal(modalDialog(
+        title = "Parolă temporară generată",
+        tags$p(paste("Utilizator:", result$username)),
+        tags$h3(result$temporary_password),
+        tags$p("Comunică această parolă utilizatorului. La prima autentificare va fi obligat să o schimbe."),
+        easyClose = TRUE,
+        footer = modalButton("Închide")
+      ))
+    } else {
+      status_text(paste("Eroare aprobare resetare:", result$message))
+    }
+  })
+  
+
   observeEvent(input$register_btn, {
     # Conturile noi sunt salvate în SQLite, cu parola hash-uită.
     req(input$register_username, input$register_password, input$register_password_confirm)
@@ -3242,6 +3687,41 @@ server = function(input, output, session) {
     }, error = function(e) {
       register_status(paste("Eroare creare cont:", conditionMessage(e)))
     })
+  })
+  
+  observeEvent(input$reset_password_btn, {
+    
+    req(input$reset_password_user)
+    
+    temp_password <- reset_user_password(input$reset_password_user)
+    
+    showModal(
+      modalDialog(
+        title = "Resetare parolă",
+        
+        tags$p(
+          paste(
+            "Parola temporară pentru utilizatorul",
+            input$reset_password_user,
+            "este:"
+          )
+        ),
+        
+        tags$h3(temp_password),
+        
+        tags$p(
+          "Comunicați această parolă utilizatorului."
+        ),
+        
+        tags$p(
+          "La prima autentificare utilizatorul va fi obligat să își schimbe parola."
+        ),
+        
+        easyClose = TRUE,
+        footer = modalButton("Închide")
+      )
+    )
+    
   })
   
   output$register_status = renderText({
@@ -3322,6 +3802,8 @@ server = function(input, output, session) {
       status_text(paste("Cerere admin:", conditionMessage(e)))
     })
   })
+  
+
   
   # Procesează fișierele încărcate, interoghează GWAS prin API și salvează rezultatele.
   observeEvent(input$process_btn, {
@@ -4194,6 +4676,64 @@ server = function(input, output, session) {
     pending_requests = read_pending_admin_requests()
     datatable(pending_requests, options = list(pageLength = 5, scrollX = TRUE))
   })
+  
+  output$password_reset_requests_table = renderDT({
+    req(logged_in(), current_user())
+    req(is_primary_admin(current_user()))
+    admin_request_refresh()
+    
+    pending_requests = read_pending_password_reset_requests()
+    datatable(pending_requests, options = list(pageLength = 5, scrollX = TRUE))
+  })
+  
+  
+  output$password_reset_requests_panel = renderUI({
+    req(logged_in(), current_user())
+    admin_request_refresh()
+    history_refresh()
+    
+    if (!is_primary_admin(current_user())) {
+      return(NULL)
+    }
+    
+    pending_requests = read_pending_password_reset_requests()
+    
+    if (nrow(pending_requests) == 0) {
+      return(tags$div(
+        style = "margin: 12px 0; color: #6c757d;",
+        "Nu există cereri noi pentru resetare parolă."
+      ))
+    }
+    
+    tagList(
+      hr(),
+      h4("Cereri pentru resetare parolă"),
+      DTOutput("password_reset_requests_table"),
+      br(),
+      fluidRow(
+        column(
+          8,
+          selectInput(
+            "selected_password_reset_request",
+            "Selectează cererea",
+            choices = setNames(
+              pending_requests$request_id,
+              paste0("#", pending_requests$request_id, " - ", pending_requests$username, " - ", pending_requests$requested_at)
+            )
+          )
+        ),
+        column(
+          4,
+          tags$div(
+            style = "margin-top: 25px;",
+            actionButton("approve_password_reset", "Generează parolă temporară", 
+                         class = "btn-success", width = "100%")
+          )
+        )
+      )
+    )
+  })
+  
   
   observeEvent(input$approve_admin_request, {
     req(logged_in(), current_user(), input$selected_admin_request)

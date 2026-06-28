@@ -15,6 +15,9 @@ Proiectul a fost realizat pentru disertație și este gândit pentru rulare loca
 - cache SQLite pentru evitarea interogărilor API repetate;
 - autentificare cu utilizatori și roluri;
 - cereri pentru rol admin, aprobare, respingere și revocare rol admin;
+- schimbarea parolei de către utilizatorul autentificat;
+- solicitarea resetării parolei prin cerere adresată administratorului principal, 
+  cu generare de parolă temporară și obligativitatea schimbării la prima autentificare;
 - salvarea fișierelor încărcate și a rezultatelor în SQLite;
 - istoric upload-uri;
 - comparare 2-3 fișiere prin diagramă Venn;
@@ -134,6 +137,10 @@ Contul implicit de administrator este:
 
 La prima autentificare, administratorul este obligat să își schimbe parola din motive de securitate.
 
+> **Notă:** Același mecanism se aplică și utilizatorilor care primesc o parolă 
+> temporară prin resetare — la prima autentificare sunt obligați să seteze 
+> o parolă nouă.
+
 ## Roluri utilizatori
 
 Aplicația are două tipuri de admin:
@@ -141,7 +148,26 @@ Aplicația are două tipuri de admin:
 - `admin principal`: contul implicit `admin`, care poate aproba sau respinge cereri de admin și poate revoca roluri admin;
 - `admin promovat`: utilizator aprobat de adminul principal, care poate vizualiza și gestiona upload-uri, dar nu poate aproba alți admini.
 
-Utilizatorii obișnuiți pot trimite o cerere pentru rol admin din interfață.
+Utilizatorii obișnuiți pot:
+- trimite o cerere pentru rol admin din interfață;
+- solicita resetarea parolei dacă nu o mai cunosc;
+- schimba parola din contul propriu după autentificare.
+
+## Resetare parolă
+
+Dacă un utilizator nu își mai cunoaște parola, poate trimite o cerere de resetare 
+din ecranul de autentificare, prin butonul **"Am uitat parola"**. Cererea ajunge 
+la administratorul principal în tab-ul **Istoric**.
+
+Fluxul este:
+1. Utilizatorul introduce numele de utilizator și trimite cererea.
+2. Administratorul principal vede cererea și apasă **"Generează parolă temporară"**.
+3. Aplicația afișează parola temporară — administratorul o comunică verbal utilizatorului.
+4. Utilizatorul se autentifică cu parola temporară.
+5. La prima autentificare, sistemul îl obligă să seteze o parolă nouă.
+
+Schimbarea parolei este disponibilă și pentru utilizatorii autentificați, 
+din butonul **"Schimbă parola"** din sidebar.
 
 ## Confidențialitate
 
